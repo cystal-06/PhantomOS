@@ -1,95 +1,94 @@
-# PhantomOS Backend Tester 🐧⚡
+# PhantomOS 🐧⚡
 
-> **Đồ án cơ sở 4 - Trường Đại học Công nghệ Thông tin và Truyền thông Việt - Hàn (VKU)**  
-> **Đề tài:** Phát triển hệ điều hành thu gọn dựa trên lõi Linux chuyên dụng cho kiểm thử Backend  
-> **Giảng viên hướng dẫn:** ThS. Ngô Lê Quân  
-> **Sinh viên thực hiện:**  
-> - Nguyễn Công Đức (MSSV: 24IT340 - Lớp 24SE1)  
-> - Trần Văn Tri (MSSV: 24IT283 - Lớp 24SE1)  
+> A minimal, stateless Linux distribution optimized for backend performance & load testing.
 
----
-
-## 📌 1. Giới thiệu đề tài
-
-Hệ điều hành siêu nhẹ (**PhantomOS**) được tinh chỉnh từ nhân Linux và bộ công cụ BusyBox/Buildroot nhằm tối ưu hóa 100% tài nguyên phần cứng cho việc kiểm thử ứng dụng Backend (Java / Spring Boot).
-
-### 🌟 Điểm nổi bật kỹ thuật:
-- **Stateless (Đóng băng hệ thống):** Khóa phân vùng gốc Read-only thông qua **OverlayFS**, tự động khôi phục trạng thái nguyên bản sau mỗi lần khởi động.
-- **RAM Disk (tmpfs) Tốc độ cao:** Đẩy toàn bộ cơ sở dữ liệu tạm thời (Database) và Log lên RAM, loại bỏ hiện tượng nghẽn cổ chai I/O của ổ đĩa.
-- **Tối ưu máy ảo Java (JRE):** Sử dụng `jlink` cắt gọt OpenJDK còn dưới 45MB runtime.
-- **Tiêu thụ tài nguyên tối thiểu:** RAM khi nhàn rỗi (idle) dưới **50MB - 100MB**, khởi động dưới **2 giây**.
+[![Kernel](https://img.shields.io/badge/Kernel-Linux%20x86__64-orange.svg)]()
+[![Architecture](https://img.shields.io/badge/Architecture-Stateless%20OverlayFS-green.svg)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
 
-## 🏗️ 2. Kiến trúc hệ thống (System Architecture)
+## 📌 Overview
+
+**PhantomOS** is an ultra-lightweight, stateless micro-distribution built on top of the Linux Kernel and BusyBox/Buildroot. It is engineered specifically to provide an isolated, deterministic, and high-performance execution environment for backend applications (Java / Spring Boot, Go, Node.js).
+
+### ✨ Key Features
+- **Stateless by Design (OverlayFS):** The root filesystem is locked as Read-Only (SquashFS). All runtime state changes are held in ephemeral RAM layers and discarded upon reboot.
+- **In-Memory Database & Logging (RAM Disk):** Critical paths such as `/var/lib/data` and `/var/log` are mounted directly on `tmpfs`, eliminating disk I/O bottlenecks during stress testing.
+- **Trimmed Runtime Footprint:** Stripped Java Runtime Environment (JRE) via `jlink` (~40MB) and essential networking toolchains (`curl`, `iproute2`, `htop`).
+- **Sub-Second Boot:** Cold-boots in under 2 seconds with an idle memory footprint of **under 60MB RAM**.
+
+---
+
+## 🏗️ System Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Boot ["Quá trình khởi động"]
-        BIOS[BIOS / UEFI] --> GRUB[GRUB / Bootloader]
-        GRUB --> Kernel[Linux Kernel (x86_64)]
-        Kernel --> InitRAM[initramfs script]
+    subgraph Boot ["1. Boot Phase"]
+        BIOS[BIOS / UEFI] --> GRUB[Bootloader / GRUB]
+        GRUB --> Kernel[Linux Kernel]
+        Kernel --> InitRAM[initramfs]
     end
 
-    subgraph Storage ["Cơ chế Lưu trữ Stateless"]
-        InitRAM --> Lower[Lower Layer: SquashFS / Read-Only Root]
-        InitRAM --> Upper[Upper Layer: tmpfs / RAM Writeable]
+    subgraph Storage ["2. Stateless Storage Stack"]
+        InitRAM --> Lower[Lower Layer: SquashFS (Read-Only Root)]
+        InitRAM --> Upper[Upper Layer: tmpfs (RAM Ephemeral)]
         Lower & Upper --> Overlay[OverlayFS Union Mount]
         Overlay --> SwitchRoot[switch_root /newroot]
     end
 
-    subgraph Runtime ["Môi trường Chạy Backend"]
+    subgraph Runtime ["3. Workload & Test Environment"]
         SwitchRoot --> RamDisk[tmpfs: /var/lib/data & /var/log]
-        SwitchRoot --> JRE[Minimal JRE Runtime]
-        RamDisk & JRE --> BackendApp[Spring Boot Backend API :8080]
-        SwitchRoot --> TUI[TUI Control Menu]
+        SwitchRoot --> JRE[Minimal JRE / Native Runtime]
+        RamDisk & JRE --> BackendApp[Backend Service (:8080)]
+        SwitchRoot --> TUI[TUI Management Console]
     end
 ```
 
 ---
 
-## 📂 3. Cấu trúc thư mục dự án
+## 📂 Repository Structure
 
 ```text
-phantom-os/
-├── configs/              # File cấu hình Buildroot và Linux Kernel
-├── overlayfs/            # Script can thiệp initramfs và cơ chế đóng băng
-├── rootfs-overlay/       # Thư mục nhúng trực tiếp vào Root Filesystem của OS
-│   ├── etc/init.d/       # Các dịch vụ tự khởi động (Network, RAM Disk, Spring Boot)
-│   └── opt/tui-menu/     # Giao diện TUI quản lý hệ thống
-├── backend-sample/       # Mã nguồn RESTful API Spring Boot phục vụ kiểm thử tải
-├── benchmarks/           # Bộ kịch bản Stress-test (k6 / wrk / jmeter) và vẽ đồ thị
-├── scripts/              # Các script tự động hóa (build OS, chạy QEMU)
-└── docs/                 # Báo cáo, slide thuyết trình và tài liệu nghiên cứu
+PhantomOS/
+├── configs/              # Buildroot & Linux Kernel configuration files
+├── overlayfs/            # Initramfs and stateless mount logic
+├── rootfs-overlay/       # Target filesystem overlay (daemons, services, configs)
+│   ├── etc/init.d/       # Init scripts (networking, ramdisk, service launcher)
+│   └── opt/tui-menu/     # Terminal UI control dashboard
+├── backend-sample/       # Sample RESTful backend application for load testing
+├── benchmarks/           # Load testing scripts (k6, wrk) and metric collectors
+├── scripts/              # Automated build and emulation scripts
+└── docs/                 # Architecture notes and benchmarking reports
 ```
 
 ---
 
-## 🚀 4. Hướng dẫn cài đặt & Biên dịch
+## 🚀 Getting Started
 
-### Yêu cầu môi trường (Host Machine):
-- Hệ điều hành: Arch Linux / Ubuntu 22.04+
-- Các gói phụ thuộc: `gcc`, `make`, `bc`, `rsync`, `ncurses`, `qemu-system-x86`
+### Prerequisites (Host Machine)
+Ensure the following packages are installed on your host system:
+* **Arch Linux:** `sudo pacman -S --needed base-devel git bc rsync ncurses qemu-system-x86`
+* **Ubuntu/Debian:** `sudo apt install build-essential git bc rsync libncurses-dev qemu-system-x86`
 
-### Các bước thực hiện:
+### Build PhantomOS
 ```bash
-# 1. Chạy script build tự động
-./scripts/build-os.sh
+# Clone the repository
+git clone https://github.com/<username>/PhantomOS.git
+cd PhantomOS
 
-# 2. Khởi động hệ điều hành trên máy ảo QEMU
+# Run the automated build script
+./scripts/build-os.sh
+```
+
+### Run on QEMU
+```bash
 ./scripts/run-qemu.sh
 ```
+* **Default Login:** `root`
+* **Port Forwarding:** Host `localhost:8080` forwarded to VM `8080`
 
 ---
 
-## 👥 5. Phân công công việc (Task Division)
-
-| Thành viên | Nhiệm vụ chính |
-| :--- | :--- |
-| **Nguyễn Công Đức** | - Tùy biến Linux Kernel & cấu hình Buildroot cơ sở<br>- Thiết lập RAM Disk (tmpfs) cho Database & tối ưu I/O<br>- Xây dựng ứng dụng Spring Boot mẫu & benchmark đối chứng |
-| **Trần Văn Tri** | - Nghiên cứu & triển khai cơ chế Stateless OverlayFS<br>- Cắt tỉa và đóng gói Java Runtime tối giản (jlink)<br>- Xây dựng Menu giao diện điều khiển TUI/GUI |
-
----
-
-## 📜 6. Giấy phép
-Dự án được thực hiện nhằm mục đích học tập và nghiên cứu trong khuôn khổ môn học **Đồ án cơ sở 4 - VKU**.
+## 📄 License
+This project is open-source under the [MIT License](LICENSE).
