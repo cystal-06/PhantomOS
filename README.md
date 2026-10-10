@@ -25,23 +25,23 @@
 ```mermaid
 flowchart TD
     subgraph Boot ["1. Boot Phase"]
-        BIOS[BIOS / UEFI] --> GRUB[Bootloader / GRUB]
-        GRUB --> Kernel[Linux Kernel]
-        Kernel --> InitRAM[initramfs]
+        BIOS["BIOS / UEFI"] --> GRUB["Bootloader / GRUB"]
+        GRUB --> Kernel["Linux Kernel"]
+        Kernel --> InitRAM["initramfs script"]
     end
 
     subgraph Storage ["2. Stateless Storage Stack"]
-        InitRAM --> Lower[Lower Layer: SquashFS (Read-Only Root)]
-        InitRAM --> Upper[Upper Layer: tmpfs (RAM Ephemeral)]
-        Lower & Upper --> Overlay[OverlayFS Union Mount]
-        Overlay --> SwitchRoot[switch_root /newroot]
+        InitRAM --> Lower["Lower Layer: SquashFS (Read-Only Root)"]
+        InitRAM --> Upper["Upper Layer: tmpfs (RAM Ephemeral)"]
+        Lower & Upper --> Overlay["OverlayFS Union Mount"]
+        Overlay --> SwitchRoot["switch_root /newroot"]
     end
 
     subgraph Runtime ["3. Workload & Test Environment"]
-        SwitchRoot --> RamDisk[tmpfs: /var/lib/data & /var/log]
-        SwitchRoot --> JRE[Minimal JRE / Native Runtime]
-        RamDisk & JRE --> BackendApp[Backend Service (:8080)]
-        SwitchRoot --> TUI[TUI Management Console]
+        SwitchRoot --> RamDisk["RAM Disk: /var/lib/data & /var/log"]
+        SwitchRoot --> JRE["Minimal JRE / Native Runtime"]
+        RamDisk & JRE --> BackendApp["Backend Service (:8080)"]
+        SwitchRoot --> TUI["TUI Management Console"]
     end
 ```
 
