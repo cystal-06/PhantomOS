@@ -1,0 +1,46 @@
+# ==========================================
+# Micro-OS Buildroot & System Ignore Rules
+# ==========================================
+
+# Buildroot downloads, output & temporary files
+output/
+dl/
+buildroot-*/
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+
+# OS Images and Virtual Disks
+*.iso
+*.img
+*.ext2
+*.ext3
+*.ext4
+*.qcow2
+*.vmdk
+*.vdi
+
+# Java / Maven build artifacts
+backend-sample/target/
+*.class
+*.jar
+*.war
+
+# Python / Benchmark virtualenvs and caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Logs & Temporary files
+*.log
+*.tmp
+*.swp
+*~
+.DS_Store
+
+# IDE Configurations
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace

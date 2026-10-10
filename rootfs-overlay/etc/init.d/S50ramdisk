@@ -1,0 +1,22 @@
+#!/bin/sh
+# ========================================================
+# Khởi tạo RAM Disk (tmpfs) cho Database và Logs
+# ========================================================
+case "$1" in
+    start)
+        echo "[+] Đang thiết lập RAM Disk cho Database và Log..."
+        mkdir -p /var/lib/data /var/log/backend
+        mount -t tmpfs -o size=512M,mode=0755 tmpfs /var/lib/data
+        mount -t tmpfs -o size=256M,mode=0755 tmpfs /var/log/backend
+        echo "[+] RAM Disk đã sẵn sàng với tốc độ truy xuất RAM tối đa."
+        ;;
+    stop)
+        umount /var/lib/data 2>/dev/null || true
+        umount /var/log/backend 2>/dev/null || true
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac
+exit 0
