@@ -1,6 +1,6 @@
 #!/bin/bash
 # ========================================================
-# Script chạy thử nghiệm Micro-OS trên máy ảo QEMU
+# Script chạy thử nghiệm PhantomOS trên máy ảo QEMU
 # ========================================================
 set -e
 
@@ -14,7 +14,7 @@ if [ ! -f "$KERNEL_IMAGE" ] || [ ! -f "$ROOTFS_IMAGE" ]; then
     exit 1
 fi
 
-echo "[+] Khởi động Micro-OS trên QEMU..."
+echo "[+] Khởi động PhantomOS trên QEMU..."
 echo "    - RAM: 2048 MB"
 echo "    - Port Forward: localhost:8080 -> VM:8080 (Spring Boot)"
 echo "    - Để thoát: Nhấn Ctrl+A rồi nhấn X"

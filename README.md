@@ -1,4 +1,4 @@
-# Micro-OS Backend Tester 🐧⚡
+# PhantomOS Backend Tester 🐧⚡
 
 > **Đồ án cơ sở 4 - Trường Đại học Công nghệ Thông tin và Truyền thông Việt - Hàn (VKU)**  
 > **Đề tài:** Phát triển hệ điều hành thu gọn dựa trên lõi Linux chuyên dụng cho kiểm thử Backend  
@@ -11,7 +11,7 @@
 
 ## 📌 1. Giới thiệu đề tài
 
-Hệ điều hành siêu nhẹ (**Micro-OS**) được tinh chỉnh từ nhân Linux và bộ công cụ BusyBox/Buildroot nhằm tối ưu hóa 100% tài nguyên phần cứng cho việc kiểm thử ứng dụng Backend (Java / Spring Boot).
+Hệ điều hành siêu nhẹ (**PhantomOS**) được tinh chỉnh từ nhân Linux và bộ công cụ BusyBox/Buildroot nhằm tối ưu hóa 100% tài nguyên phần cứng cho việc kiểm thử ứng dụng Backend (Java / Spring Boot).
 
 ### 🌟 Điểm nổi bật kỹ thuật:
 - **Stateless (Đóng băng hệ thống):** Khóa phân vùng gốc Read-only thông qua **OverlayFS**, tự động khôi phục trạng thái nguyên bản sau mỗi lần khởi động.
@@ -51,7 +51,7 @@ flowchart TD
 ## 📂 3. Cấu trúc thư mục dự án
 
 ```text
-micro-backend-os/
+phantom-os/
 ├── configs/              # File cấu hình Buildroot và Linux Kernel
 ├── overlayfs/            # Script can thiệp initramfs và cơ chế đóng băng
 ├── rootfs-overlay/       # Thư mục nhúng trực tiếp vào Root Filesystem của OS

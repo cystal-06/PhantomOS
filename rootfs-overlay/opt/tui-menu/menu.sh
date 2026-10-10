@@ -6,7 +6,7 @@
 show_menu() {
     while true; do
         CHOICE=$(dialog --clear \
-                --backtitle "VKU Micro-OS Backend Tester v1.0" \
+                --backtitle "PhantomOS Backend Tester v1.0" \
                 --title " BẢNG ĐIỀU KHIỂN HỆ THỐNG " \
                 --menu "Dùng phím mũi tên và Enter để chọn:" 15 60 6 \
                 1 "Thông tin IP & Cấu hình mạng" \
