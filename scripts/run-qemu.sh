@@ -4,7 +4,8 @@
 # ========================================================
 set -e
 
-BUILDROOT_DIR="buildroot-2024.02.1"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILDROOT_DIR="${DIR}/buildroot-2024.02.1"
 KERNEL_IMAGE="${BUILDROOT_DIR}/output/images/bzImage"
 ROOTFS_IMAGE="${BUILDROOT_DIR}/output/images/rootfs.ext4"
 
