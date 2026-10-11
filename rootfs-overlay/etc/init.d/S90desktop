@@ -1,0 +1,31 @@
+#!/bin/sh
+case "$1" in
+    start)
+        printf "Starting Desktop: "
+        for i in 1 2 3 4 5; do
+            if [ -e /tmp/.X11-unix/X0 ] || pgrep -x Xorg >/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        DISPLAY=:0 /usr/bin/fluxbox &
+        sleep 1
+        DISPLAY=:0 /usr/bin/xterm &
+        echo "OK"
+        ;;
+    stop)
+        printf "Stopping Desktop: "
+        killall xterm 2>/dev/null
+        killall fluxbox 2>/dev/null
+        echo "OK"
+        ;;
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac

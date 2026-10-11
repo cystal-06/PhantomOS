@@ -18,7 +18,7 @@ qemu-system-x86_64 \
     -kernel "${KERNEL_IMAGE}" \
     -drive file="${ROOTFS_IMAGE}",if=virtio,format=raw \
     -append "root=/dev/vda quiet" \
-    -vga std \
+    -vga virtio \
     -device virtio-mouse-pci \
     -device virtio-keyboard-pci \
     -net nic,model=virtio \

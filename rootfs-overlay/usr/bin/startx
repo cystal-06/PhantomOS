@@ -1,0 +1,6 @@
+#!/bin/sh
+if ! pgrep -x Xorg >/dev/null; then
+    /etc/init.d/S40xorg start
+    sleep 1
+fi
+DISPLAY=:0 exec /usr/bin/fluxbox
