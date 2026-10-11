@@ -1,0 +1,17 @@
+[begin] (PhantomOS Lab)
+  [exec] (  Terminal  ) {xterm}
+  [exec] (  System Monitor (htop)  ) {xterm -title "System Monitor" -e htop}
+  [exec] (  Backend Test Suite  ) {xterm -title "Backend Lab" -e /opt/tui-menu/menu.sh}
+  [separator]
+  [submenu] (  Themes & Styles  )
+    [stylesdir] (/usr/share/fluxbox/styles)
+    [stylesdir] (/root/.fluxbox/styles)
+  [end]
+  [workspaces] (  Workspaces  )
+  [separator]
+  [reconfig] (  Reload Desktop  )
+  [restart] (  Restart Fluxbox  )
+  [separator]
+  [exec] (  Reboot  ) {reboot}
+  [exec] (  Power Off  ) {poweroff}
+[end]

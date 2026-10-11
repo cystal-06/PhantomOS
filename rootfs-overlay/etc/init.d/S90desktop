@@ -8,9 +8,10 @@ case "$1" in
             fi
             sleep 1
         done
+        DISPLAY=:0 /usr/bin/fbsetroot -gradient VerticalGradient -from "#0f172a" -to "#1e1b4b" 2>/dev/null || true
         DISPLAY=:0 /usr/bin/fluxbox &
         sleep 1
-        DISPLAY=:0 /usr/bin/xterm &
+        DISPLAY=:0 /usr/bin/xterm -geometry 92x26+80+60 -title "PhantomOS Terminal" &
         echo "OK"
         ;;
     stop)
