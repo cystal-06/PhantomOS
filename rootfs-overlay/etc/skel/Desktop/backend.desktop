@@ -2,5 +2,5 @@
 Type=Application
 Name=Backend Lab
 Exec=xterm -bg "#181825" -fg "#cdd6f4" -title "Backend Lab" -e /opt/tui-menu/menu.sh
-Icon=utilities-system-monitor
+Icon=system-software-install
 Terminal=false

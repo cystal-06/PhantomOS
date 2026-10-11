@@ -17,8 +17,8 @@ qemu-system-x86_64 \
     -smp 2 \
     -kernel "${KERNEL_IMAGE}" \
     -drive file="${ROOTFS_IMAGE}",if=virtio,format=raw \
-    -append "root=/dev/vda quiet video=1024x768" \
-    -vga virtio \
+    -append "root=/dev/vda quiet video=1280x800" \
+    -device virtio-vga,xres=1280,yres=800 \
     -device virtio-mouse-pci \
     -device virtio-keyboard-pci \
     -usb \
