@@ -21,5 +21,6 @@ qemu-system-x86_64 \
     -vga virtio \
     -device virtio-mouse-pci \
     -device virtio-keyboard-pci \
+    -device usb-tablet \
     -net nic,model=virtio \
     -net user,hostfwd=tcp::8080-:8080
