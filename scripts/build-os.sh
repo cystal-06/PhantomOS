@@ -1,16 +1,17 @@
 #!/bin/bash
-# ========================================================
-# Script tự động nạp cấu hình và biên dịch PhantomOS
-# ========================================================
 set -e
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILDROOT_DIR="${DIR}/buildroot-2024.02.1"
+BUILDROOT_VERSION="2024.02.1"
+BUILDROOT_DIR="${DIR}/buildroot-${BUILDROOT_VERSION}"
 CONFIG_FILE="${DIR}/configs/phantomos_defconfig"
 
 if [ ! -d "${BUILDROOT_DIR}" ]; then
-    echo "[-] Chưa tìm thấy thư mục Buildroot tại ${BUILDROOT_DIR}"
-    exit 1
+    echo "[+] Downloading Buildroot ${BUILDROOT_VERSION}..."
+    wget -c "https://buildroot.org/downloads/buildroot-${BUILDROOT_VERSION}.tar.xz" -O "${DIR}/buildroot-${BUILDROOT_VERSION}.tar.xz"
+    echo "[+] Extracting Buildroot..."
+    tar -xf "${DIR}/buildroot-${BUILDROOT_VERSION}.tar.xz" -C "${DIR}"
+    rm -f "${DIR}/buildroot-${BUILDROOT_VERSION}.tar.xz"
 fi
 
 cd "${BUILDROOT_DIR}"
