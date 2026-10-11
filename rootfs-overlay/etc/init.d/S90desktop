@@ -11,12 +11,11 @@ case "$1" in
             fi
             sleep 1
         done
-        /usr/bin/fbsetroot -solid "#181825" 2>/dev/null || true
         /usr/bin/fluxbox &
         sleep 1
         /usr/bin/pcmanfm --desktop &
         sleep 1
-        /usr/bin/xterm -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244" -geometry 92x26+60+60 -title "PhantomOS Terminal" &
+        /usr/bin/xterm -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244" -geometry 88x24+70+50 -title "PhantomOS Terminal" &
         echo "OK"
         ;;
     stop)
