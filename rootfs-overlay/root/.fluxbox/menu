@@ -1,11 +1,17 @@
 [begin] (PhantomOS Lab)
-  [exec] (  Terminal  ) {xterm}
-  [exec] (  System Monitor (htop)  ) {xterm -title "System Monitor" -e htop}
-  [exec] (  Backend Test Suite  ) {xterm -title "Backend Lab" -e /opt/tui-menu/menu.sh}
+  [submenu] (  Applications  )
+    [exec] (  File Manager  ) {pcmanfm}
+    [exec] (  Text Editor (Leafpad)  ) {leafpad}
+    [exec] (  Terminal  ) {xterm -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244"}
+  [end]
+  [submenu] (  Backend Lab  )
+    [exec] (  Backend Test Suite  ) {xterm -bg "#181825" -fg "#cdd6f4" -title "Backend Lab" -e /opt/tui-menu/menu.sh}
+    [exec] (  System Monitor (htop)  ) {xterm -bg "#181825" -fg "#cdd6f4" -title "System Monitor" -e htop}
+  [end]
   [separator]
-  [submenu] (  Themes & Styles  )
+  [submenu] (  Settings & Themes  )
     [stylesdir] (/usr/share/fluxbox/styles)
-    [stylesdir] (/root/.fluxbox/styles)
+    [exec] (  Desktop Settings  ) {pcmanfm --desktop-pref}
   [end]
   [workspaces] (  Workspaces  )
   [separator]

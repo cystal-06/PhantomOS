@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Exec=xterm -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244"
+Icon=utilities-terminal
+Terminal=false

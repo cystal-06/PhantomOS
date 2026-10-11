@@ -1,7 +1,7 @@
 session.configVersion: 13
-session.menuFile: ~/.fluxbox/menu
-session.keyFile: ~/.fluxbox/keys
-session.styleFile: /root/.fluxbox/styles/PhantomDark
+session.menuFile: /usr/share/fluxbox/menu
+session.keyFile: /usr/share/fluxbox/keys
+session.styleFile: /usr/share/fluxbox/styles/PhantomDark
 session.screen0.toolbar.placement: TopCenter
 session.screen0.toolbar.widthPercent: 100
 session.screen0.toolbar.tools: prevworkspace, workspacename, nextworkspace, iconbar, clock

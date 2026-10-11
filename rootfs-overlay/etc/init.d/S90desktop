@@ -2,21 +2,27 @@
 case "$1" in
     start)
         printf "Starting Desktop: "
+        export HOME=/root
+        export USER=root
+        export DISPLAY=:0
         for i in 1 2 3 4 5; do
             if [ -e /tmp/.X11-unix/X0 ] || pgrep -x Xorg >/dev/null; then
                 break
             fi
             sleep 1
         done
-        DISPLAY=:0 /usr/bin/fbsetroot -gradient VerticalGradient -from "#0f172a" -to "#1e1b4b" 2>/dev/null || true
-        DISPLAY=:0 /usr/bin/fluxbox &
+        /usr/bin/fbsetroot -solid "#181825" 2>/dev/null || true
+        /usr/bin/fluxbox &
         sleep 1
-        DISPLAY=:0 /usr/bin/xterm -geometry 92x26+80+60 -title "PhantomOS Terminal" &
+        /usr/bin/pcmanfm --desktop &
+        sleep 1
+        /usr/bin/xterm -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244" -geometry 92x26+60+60 -title "PhantomOS Terminal" &
         echo "OK"
         ;;
     stop)
         printf "Stopping Desktop: "
         killall xterm 2>/dev/null
+        killall pcmanfm 2>/dev/null
         killall fluxbox 2>/dev/null
         echo "OK"
         ;;

@@ -1,0 +1,11 @@
+session.configVersion: 13
+session.menuFile: /usr/share/fluxbox/menu
+session.keyFile: /usr/share/fluxbox/keys
+session.styleFile: /usr/share/fluxbox/styles/PhantomDark
+session.screen0.toolbar.placement: TopCenter
+session.screen0.toolbar.widthPercent: 100
+session.screen0.toolbar.tools: prevworkspace, workspacename, nextworkspace, iconbar, clock
+session.screen0.strftimeFormat: %H:%M  |  %a %d/%m
+session.screen0.workspaceNames: Lab-1, Lab-2, Monitor, Database
+session.screen0.focusModel: ClickToFocus
+session.screen0.window.focusModel: ClickToFocus

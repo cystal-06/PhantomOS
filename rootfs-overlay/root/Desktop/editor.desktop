@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Editor
+Exec=leafpad
+Icon=accessories-text-editor
+Terminal=false
