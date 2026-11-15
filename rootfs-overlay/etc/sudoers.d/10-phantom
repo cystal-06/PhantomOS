@@ -1,0 +1,9 @@
+# PhantomOS standard sudo policy
+Defaults env_keep += "DISPLAY XAUTHORITY LANG LC_ALL COLORTERM"
+Defaults passwd_timeout=5, timestamp_timeout=15
+
+# Members of group sudo can execute any command after password verification
+%sudo ALL=(ALL:ALL) ALL
+
+# Desktop session power controls for sudo users
+%sudo ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/poweroff, /sbin/halt
