@@ -12,7 +12,8 @@ fi
 
 cd "${BUILDROOT_DIR}"
 echo "[+] Updating rootfs images (target-finalize + ext4 + squashfs + initramfs)..."
-HOST_CFLAGS_COMPAT="-O2 -std=gnu17 -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+HOST_CFLAGS_COMPAT="-O2 -std=gnu17 -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=incompatible-pointer-types -Wno-error=return-mismatch"
 make target-finalize HOST_CFLAGS="${HOST_CFLAGS_COMPAT}"
 make rootfs-ext2 HOST_CFLAGS="${HOST_CFLAGS_COMPAT}"
 make rootfs-squashfs HOST_CFLAGS="${HOST_CFLAGS_COMPAT}"
