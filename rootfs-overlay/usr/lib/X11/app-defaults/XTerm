@@ -1,11 +1,18 @@
 *faceName: Adwaita Mono
 *faceSize: 11
+*renderFont: true
+*utf8: 1
+*locale: true
+*loginShell: true
+*selectToClipboard: true
+*metaSendsEscape: true
+*termName: xterm-256color
 *background: #181825
 *foreground: #cdd6f4
 *cursorColor: #89b4fa
 *borderColor: #313244
 *borderWidth: 2
-*internalBorder: 8
+*internalBorder: 10
 *scrollBar: false
 *saveLines: 4096
 *color0: #45475a

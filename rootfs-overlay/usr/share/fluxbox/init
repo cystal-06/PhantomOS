@@ -2,6 +2,7 @@ session.configVersion: 13
 session.menuFile: /usr/share/fluxbox/menu
 session.keyFile: /usr/share/fluxbox/keys
 session.styleFile: /usr/share/fluxbox/styles/PhantomDark
+session.screen0.workspaces: 4
 session.screen0.toolbar.placement: TopCenter
 session.screen0.toolbar.widthPercent: 100
 session.screen0.toolbar.tools: workspacename, prevworkspace, nextworkspace, iconbar, clock
@@ -9,3 +10,7 @@ session.screen0.strftimeFormat: %H:%M  |  %a %d/%m
 session.screen0.workspaceNames: ❖ Apps, ⚡ Backend, 📂 Files, ⚙ System
 session.screen0.focusModel: ClickToFocus
 session.screen0.window.focusModel: ClickToFocus
+session.screen0.edgeSnapThreshold: 10
+session.screen0.opaqueMove: True
+session.screen0.fullMaximization: False
+session.screen0.showwindowposition: False

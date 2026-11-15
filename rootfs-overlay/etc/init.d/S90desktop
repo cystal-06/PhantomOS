@@ -1,34 +1,64 @@
 #!/bin/sh
+# ==============================================================================
+# Starts Fluxbox Desktop Environment (skipped automatically in headless mode)
+# ==============================================================================
+
+is_headless() {
+    grep -qw "headless" /proc/cmdline 2>/dev/null
+}
+
 case "$1" in
     start)
+        if is_headless; then
+            echo "Skipping Desktop (headless mode)"
+            exit 0
+        fi
+
         printf "Starting Desktop: "
         export HOME=/root
         export USER=root
         export DISPLAY=:0
-        for i in 1 2 3 4 5; do
-            if [ -e /tmp/.X11-unix/X0 ] || pgrep -x Xorg >/dev/null; then
-                break
-            fi
-            sleep 1
+        export LANG=C.UTF-8
+
+        # Wait for Xorg socket (up to 3s)
+        TRIES=0
+        while [ ! -S /tmp/.X11-unix/X0 ] && [ "${TRIES}" -lt 30 ]; do
+            usleep 100000
+            TRIES=$((TRIES + 1))
         done
-        /usr/bin/fluxbox &
-        sleep 1
-        /usr/bin/pcmanfm --desktop &
-        sleep 1
-        /usr/bin/xterm -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244" -geometry 88x24+70+50 -title "PhantomOS Terminal" &
+
+        if [ ! -S /tmp/.X11-unix/X0 ]; then
+            echo "FAIL (Xorg socket missing)"
+            exit 1
+        fi
+
+        /usr/bin/fluxbox >/dev/null 2>&1 &
+        TRIES=0
+        while ! pgrep -x fluxbox >/dev/null 2>&1 && [ "${TRIES}" -lt 20 ]; do
+            usleep 100000
+            TRIES=$((TRIES + 1))
+        done
+
+        /usr/bin/pcmanfm --desktop >/dev/null 2>&1 &
+        usleep 200000
+
+        /usr/bin/xterm -u8 -ls -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244" -geometry 90x26+64+52 -title "PhantomOS Terminal" &
         echo "OK"
         ;;
     stop)
+        if is_headless && ! pgrep -x fluxbox >/dev/null 2>&1; then
+            exit 0
+        fi
         printf "Stopping Desktop: "
-        killall xterm 2>/dev/null
-        killall pcmanfm 2>/dev/null
-        killall fluxbox 2>/dev/null
+        killall xterm 2>/dev/null || true
+        killall pcmanfm 2>/dev/null || true
+        killall fluxbox 2>/dev/null || true
         echo "OK"
         ;;
     restart)
-        $0 stop
-        sleep 1
-        $0 start
+        "$0" stop
+        usleep 200000
+        "$0" start
         ;;
     *)
         echo "Usage: $0 {start|stop|restart}"

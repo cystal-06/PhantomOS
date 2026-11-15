@@ -1,0 +1,69 @@
+#!/bin/sh
+# ==============================================================================
+# Starts Xorg display server (skipped automatically in headless boot mode)
+# ==============================================================================
+
+BIN=/usr/bin/Xorg
+PIDFILE=/var/run/xorg.pid
+XORG_ARGS=":0.0 vt01 -s 0 -dpms -nolisten tcp -noreset -allowMouseOpenFail"
+
+is_headless() {
+    grep -qw "headless" /proc/cmdline 2>/dev/null
+}
+
+start() {
+    if is_headless; then
+        echo "Skipping Xorg (headless mode)"
+        return 0
+    fi
+
+    printf "Starting Xorg: "
+    rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
+    start-stop-daemon -S -q -b -m -p "${PIDFILE}" --exec "${BIN}" -- ${XORG_ARGS}
+    if [ $? -ne 0 ]; then
+        echo "FAIL"
+        return 1
+    fi
+
+    # Poll for X11 UNIX socket instead of a fixed 3s sleep
+    TRIES=0
+    while [ ! -S /tmp/.X11-unix/X0 ] && [ "${TRIES}" -lt 30 ]; do
+        usleep 100000
+        TRIES=$((TRIES + 1))
+    done
+
+    if [ -S /tmp/.X11-unix/X0 ]; then
+        echo "OK"
+    else
+        echo "TIMEOUT"
+        return 1
+    fi
+}
+
+stop() {
+    if is_headless && [ ! -f "${PIDFILE}" ]; then
+        return 0
+    fi
+    printf "Stopping Xorg: "
+    start-stop-daemon -K -q -p "${PIDFILE}"
+    rm -f "${PIDFILE}" /tmp/.X0-lock /tmp/.X11-unix/X0
+    echo "OK"
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        usleep 200000
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
