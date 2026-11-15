@@ -15,24 +15,34 @@ HOST_DIR="${HOST_DIR:-${BR_DIR}/output/host}"
 CC_BIN="${HOST_DIR}/bin/x86_64-linux-gcc"
 STRIP_BIN="${HOST_DIR}/bin/x86_64-linux-strip"
 PKGCFG_BIN="${HOST_DIR}/bin/pkg-config"
-MONITOR_SRC="${ROOT_DIR}/apps/phantom-monitor/phantom-monitor.c"
 
-if [ -f "${MONITOR_SRC}" ] && [ -x "${CC_BIN}" ] && [ -x "${PKGCFG_BIN}" ]; then
+build_gtk_app() {
+    local app_name="$1"
+    local src_file="${ROOT_DIR}/apps/${app_name}/${app_name}.c"
+    local out_bin="${TARGET_DIR}/usr/bin/${app_name}"
+    shift
+
+    [ -f "${src_file}" ] || return 0
+    echo "[post-build] Building ${app_name}..."
+    mkdir -p "${TARGET_DIR}/usr/bin"
+    # shellcheck disable=SC2046
+    "${CC_BIN}" -O2 -Wall -Wextra -Werror -Wno-deprecated-declarations \
+        "${src_file}" \
+        $("${PKGCFG_BIN}" --cflags --libs gtk+-2.0) \
+        "$@" -o "${out_bin}"
+
+    if [ -x "${STRIP_BIN}" ]; then
+        "${STRIP_BIN}" "${out_bin}"
+    fi
+}
+
+if [ -x "${CC_BIN}" ] && [ -x "${PKGCFG_BIN}" ]; then
     export PKG_CONFIG_SYSROOT_DIR="${STAGING_DIR}"
     export PKG_CONFIG_LIBDIR="${STAGING_DIR}/usr/lib/pkgconfig:${STAGING_DIR}/usr/share/pkgconfig"
 
     if "${PKGCFG_BIN}" --exists gtk+-2.0; then
-        echo "[post-build] Building phantom-monitor..."
-        mkdir -p "${TARGET_DIR}/usr/bin"
-        # shellcheck disable=SC2046
-        "${CC_BIN}" -O2 -Wall -Wextra -Werror -Wno-deprecated-declarations \
-            "${MONITOR_SRC}" \
-            $("${PKGCFG_BIN}" --cflags --libs gtk+-2.0) \
-            -lm -o "${TARGET_DIR}/usr/bin/phantom-monitor"
-
-        if [ -x "${STRIP_BIN}" ]; then
-            "${STRIP_BIN}" "${TARGET_DIR}/usr/bin/phantom-monitor"
-        fi
+        build_gtk_app "phantom-monitor" -lm
+        build_gtk_app "phantom-login" -lm -lcrypt -lX11
     fi
 fi
 

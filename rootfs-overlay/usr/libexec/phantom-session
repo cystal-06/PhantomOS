@@ -1,0 +1,42 @@
+#!/bin/sh
+# Launches the authenticated user's selected PhantomOS graphical session.
+# Executed via `sh -l` as the target user after UID/GID and environment setup.
+
+SESSION_TYPE="${1:-desktop}"
+
+cleanup_session() {
+    if [ -n "${PCMANFM_PID:-}" ]; then
+        kill "${PCMANFM_PID}" 2>/dev/null || true
+    fi
+    if [ -n "${XTERM_PID:-}" ]; then
+        kill "${XTERM_PID}" 2>/dev/null || true
+    fi
+}
+trap cleanup_session EXIT INT TERM
+
+if [ "${SESSION_TYPE}" = "terminal" ]; then
+    exec /usr/bin/xterm -u8 -ls \
+        -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244" \
+        -geometry 148x44+44+32 -title "PhantomOS Session Console (${USER})"
+fi
+
+/usr/bin/fluxbox >/dev/null 2>&1 &
+FB_PID=$!
+
+TRIES=0
+while ! kill -0 "${FB_PID}" 2>/dev/null && [ "${TRIES}" -lt 20 ]; do
+    usleep 50000
+    TRIES=$((TRIES + 1))
+done
+usleep 250000
+
+/usr/bin/pcmanfm --desktop >/dev/null 2>&1 &
+PCMANFM_PID=$!
+usleep 150000
+
+/usr/bin/xterm -u8 -ls \
+    -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244" \
+    -geometry 92x26+64+52 -title "PhantomOS Terminal (${USER})" >/dev/null 2>&1 &
+XTERM_PID=$!
+
+wait "${FB_PID}"
