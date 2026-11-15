@@ -25,7 +25,9 @@ fi
 READELF_BIN="$(command -v "${HOST_DIR:-/usr}/bin/x86_64-linux-readelf" || command -v readelf)"
 
 rm -rf "${STAGING_DIR}"
-mkdir -p "${STAGING_DIR}"/{bin,sbin,lib,lib64,proc,sys,dev,mnt/lower,mnt/upper,newroot}
+mkdir -p "${STAGING_DIR}"/{bin,sbin,lib,usr/lib,proc,sys,dev,mnt/lower,mnt/upper,newroot}
+ln -s lib "${STAGING_DIR}/lib64"
+ln -s lib "${STAGING_DIR}/usr/lib64"
 
 # Copy BusyBox binary
 install -m 0755 "${TARGET_DIR}/bin/busybox" "${STAGING_DIR}/bin/busybox"
@@ -35,12 +37,11 @@ copy_lib_with_deps() {
     local bin_path="$1"
     local needed lib_src lib_dest real_src
 
-    # Ensure dynamic linker is present
+    # Ensure dynamic linker is present in /lib (accessible via /lib64 -> lib)
     for ld in "${TARGET_DIR}/lib/ld-linux-x86-64.so.2" "${TARGET_DIR}/lib64/ld-linux-x86-64.so.2"; do
-        if [ -e "${ld}" ] && [ ! -e "${STAGING_DIR}/lib64/ld-linux-x86-64.so.2" ]; then
+        if [ -e "${ld}" ] && [ ! -e "${STAGING_DIR}/lib/ld-linux-x86-64.so.2" ]; then
             real_src="$(readlink -f "${ld}")"
-            install -m 0755 "${real_src}" "${STAGING_DIR}/lib64/ld-linux-x86-64.so.2"
-            ln -sf ../lib64/ld-linux-x86-64.so.2 "${STAGING_DIR}/lib/ld-linux-x86-64.so.2"
+            install -m 0755 "${real_src}" "${STAGING_DIR}/lib/ld-linux-x86-64.so.2"
         fi
     done
 
