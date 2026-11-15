@@ -1,0 +1,115 @@
+#!/bin/sh
+# ==============================================================================
+# PhantomOS Stateless Initramfs PID 1
+# Mounts a read-only SquashFS lower layer and an ephemeral tmpfs upper layer
+# via OverlayFS, then switches root into /sbin/init.
+# ==============================================================================
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+ROOT_DEV="/dev/vda"
+ROOT_FSTYPE="squashfs"
+OVERLAY_SIZE="50%"
+DEBUG=0
+QUIET=0
+
+log_info() {
+    [ "${QUIET}" -eq 0 ] && echo "[initramfs] $*"
+}
+
+log_err() {
+    echo "[initramfs] ERROR: $*" >&2
+}
+
+rescue_shell() {
+    log_err "Dropping to emergency initramfs shell."
+    echo "Kernel cmdline: $(cat /proc/cmdline 2>/dev/null)"
+    echo "Block devices:"
+    ls -l /dev/vd* /dev/sd* 2>/dev/null || true
+    exec /bin/sh
+}
+
+# 1. Mount essential virtual filesystems
+mkdir -p /proc /sys /dev /mnt/lower /mnt/upper /newroot
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
+# 2. Parse kernel command line parameters
+for param in $(cat /proc/cmdline); do
+    case "${param}" in
+        root=*)
+            ROOT_DEV="${param#root=}"
+            ;;
+        rootfstype=*)
+            ROOT_FSTYPE="${param#rootfstype=}"
+            ;;
+        phantom.overlay_size=*)
+            OVERLAY_SIZE="${param#phantom.overlay_size=}"
+            ;;
+        phantom.debug)
+            DEBUG=1
+            QUIET=0
+            ;;
+        quiet)
+            [ "${DEBUG}" -eq 0 ] && QUIET=1
+            ;;
+    esac
+done
+
+[ "${DEBUG}" -eq 1 ] && set -x
+
+# 3. Wait for root block device (up to 5s, polling every 50ms)
+TRIES=0
+MAX_TRIES=100
+while [ ! -b "${ROOT_DEV}" ] && [ "${TRIES}" -lt "${MAX_TRIES}" ]; do
+    usleep 50000
+    TRIES=$((TRIES + 1))
+done
+
+if [ ! -b "${ROOT_DEV}" ]; then
+    log_err "Root device ${ROOT_DEV} did not appear within 5s."
+    rescue_shell
+fi
+
+# 4. Mount Read-Only SquashFS lower layer
+log_info "Mounting ${ROOT_DEV} (${ROOT_FSTYPE}, ro) -> /mnt/lower"
+if ! mount -t "${ROOT_FSTYPE}" -o ro "${ROOT_DEV}" /mnt/lower; then
+    log_err "Failed to mount ${ROOT_DEV} as ${ROOT_FSTYPE}."
+    rescue_shell
+fi
+
+# 5. Mount ephemeral tmpfs upper layer in RAM
+log_info "Mounting tmpfs (size=${OVERLAY_SIZE}) -> /mnt/upper"
+if ! mount -t tmpfs -o "size=${OVERLAY_SIZE},mode=0755" tmpfs /mnt/upper; then
+    log_err "Failed to mount tmpfs for overlay upper layer."
+    rescue_shell
+fi
+
+mkdir -p /mnt/upper/upper /mnt/upper/work
+
+# 6. Mount OverlayFS union filesystem
+log_info "Mounting OverlayFS union -> /newroot"
+if ! mount -t overlay overlay \
+    -o "lowerdir=/mnt/lower,upperdir=/mnt/upper/upper,workdir=/mnt/upper/work" \
+    /newroot; then
+    log_err "Failed to mount OverlayFS."
+    rescue_shell
+fi
+
+# Expose lower (RO) and upper (RAM) layers inside /newroot for inspection
+mkdir -p /newroot/mnt/.overlay/lower /newroot/mnt/.overlay/upper
+mount --move /mnt/lower /newroot/mnt/.overlay/lower || true
+mount --move /mnt/upper /newroot/mnt/.overlay/upper || true
+
+# 7. Hand off virtual filesystems and switch_root to real init
+mkdir -p /newroot/proc /newroot/sys /newroot/dev
+mount --move /proc /newroot/proc
+mount --move /sys /newroot/sys
+mount --move /dev /newroot/dev
+
+log_info "Switching root to /newroot/sbin/init"
+exec switch_root /newroot /sbin/init
+
+log_err "switch_root failed!"
+rescue_shell
