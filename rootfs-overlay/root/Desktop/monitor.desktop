@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=System Monitor
+Exec=/usr/bin/phantom-monitor
+Icon=applications-system
+Terminal=false
