@@ -1,5 +1,3 @@
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
 [ "${TERM:-}" = "xterm" ] && export TERM=xterm-256color
 
 KVER="$(uname -r)"
@@ -7,7 +5,7 @@ ROOT_MODE="Read-Write (ext4)"
 if grep -q " / overlay " /proc/mounts 2>/dev/null; then
     ROOT_MODE="Stateless (SquashFS + OverlayFS)"
 fi
-MEM_INFO="$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "%dMB used / %dMB total", (t-a)/1024, t/1024}' /proc/meminfo 2>/dev/null)"
+MEM_INFO="$(awk '/^MemTotal:/{t=$2} /^MemFree:/{f=$2} /^Buffers:/{b=$2} /^Cached:/{c=$2} /^SReclaimable:/{s=$2} END{u=(t-f-b-c-s)/1024; if(u<0)u=0; printf "%dMB used / %dMB total", u, t/1024}' /proc/meminfo 2>/dev/null)"
 IP_ADDR="$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2; exit}')"
 [ -z "${IP_ADDR}" ] && IP_ADDR="pending"
 

@@ -2,7 +2,7 @@
 *faceSize: 11
 *renderFont: true
 *utf8: 1
-*locale: true
+*locale: false
 *loginShell: true
 *selectToClipboard: true
 *metaSendsEscape: true

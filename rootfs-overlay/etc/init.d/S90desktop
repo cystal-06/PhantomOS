@@ -18,7 +18,6 @@ case "$1" in
         export HOME=/root
         export USER=root
         export DISPLAY=:0
-        export LANG=C.UTF-8
 
         # Wait for Xorg socket (up to 3s)
         TRIES=0
