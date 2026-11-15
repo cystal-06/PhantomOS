@@ -33,7 +33,7 @@ else
 fi
 
 echo "[+] Building PhantomOS using $(nproc) CPU threads..."
-make -j"$(nproc)" HOST_CFLAGS="-O2 -std=gnu17"
+make -j"$(nproc)" HOST_CFLAGS="-O2 -std=gnu17 -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
 
 echo "[+] Build complete! Generated images in ${IMAGES_DIR}:"
 ls -lh "${IMAGES_DIR}"/{bzImage,initramfs.cpio.gz,rootfs.squashfs,rootfs.ext4} 2>/dev/null || ls -lh "${IMAGES_DIR}"

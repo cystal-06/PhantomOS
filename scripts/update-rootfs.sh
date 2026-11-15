@@ -12,9 +12,10 @@ fi
 
 cd "${BUILDROOT_DIR}"
 echo "[+] Updating rootfs images (target-finalize + ext4 + squashfs + initramfs)..."
-make target-finalize HOST_CFLAGS="-O2 -std=gnu17"
-make rootfs-ext2 HOST_CFLAGS="-O2 -std=gnu17"
-make rootfs-squashfs HOST_CFLAGS="-O2 -std=gnu17"
+HOST_CFLAGS_COMPAT="-O2 -std=gnu17 -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
+make target-finalize HOST_CFLAGS="${HOST_CFLAGS_COMPAT}"
+make rootfs-ext2 HOST_CFLAGS="${HOST_CFLAGS_COMPAT}"
+make rootfs-squashfs HOST_CFLAGS="${HOST_CFLAGS_COMPAT}"
 
 echo "[+] Rootfs updated successfully:"
 ls -lh "${IMAGES_DIR}"/{initramfs.cpio.gz,rootfs.squashfs,rootfs.ext4} 2>/dev/null || true
