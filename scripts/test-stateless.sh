@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automated QEMU smoke test verifying PhantomOS stateless OverlayFS boot."""
+"""Automated QEMU smoke test verifying PhantomOS stateless OverlayFS boot, auth, and sudo."""
 
 import os
 import pty
@@ -32,25 +32,29 @@ def read_until(fd: int, targets: list[bytes], timeout: float) -> tuple[bytes, by
     return buf, None
 
 
-def login_and_run(fd: int, boot_timeout: float = 30.0) -> bytes:
+def login_and_run(fd: int, username: str, password: str, prompt: bytes, boot_timeout: float = 30.0) -> bytes:
     _, match = read_until(fd, [b"login:"], boot_timeout)
     if not match:
         raise RuntimeError("Timed out waiting for login prompt")
 
-    os.write(fd, b"root\n")
-    _, match = read_until(fd, [b"# "], 10.0)
+    os.write(fd, f"{username}\n".encode())
+    _, match = read_until(fd, [b"Password:"], 10.0)
     if not match:
-        raise RuntimeError("Timed out waiting for root shell prompt")
+        raise RuntimeError("Timed out waiting for Password prompt")
+
+    os.write(fd, f"{password}\n".encode())
+    _, match = read_until(fd, [prompt], 10.0)
+    if not match:
+        raise RuntimeError(f"Timed out waiting for shell prompt {prompt!r}")
     return b""
 
 
-def run_cmd(fd: int, cmd: str, marker: str) -> str:
+def run_cmd(fd: int, cmd: str, marker: str, prompt: bytes) -> str:
     os.write(fd, f"{cmd}; echo {marker}:$?\n".encode())
     out, match = read_until(fd, [f"{marker}:".encode()], 10.0)
     if not match:
         raise RuntimeError(f"Command timed out: {cmd}")
-    # Drain exit status line
-    tail, _ = read_until(fd, [b"# "], 5.0)
+    tail, _ = read_until(fd, [prompt], 5.0)
     return (out + tail).decode(errors="replace")
 
 
@@ -70,40 +74,47 @@ def main() -> int:
 
     try:
         t0 = time.monotonic()
-        login_and_run(master_fd)
+        login_and_run(master_fd, "phantom", "phantom", b"$ ")
         boot_secs = time.monotonic() - t0
-        print(f"\n[test] First boot completed in {boot_secs:.2f}s")
+        print(f"\n[test] First boot completed in {boot_secs:.2f}s (logged in as phantom)")
 
-        mounts_out = run_cmd(master_fd, "cat /proc/mounts", "MNT_RC")
+        id_out = run_cmd(master_fd, "id", "ID_RC", b"$ ")
+        assert "uid=1000(phantom)" in id_out and "ID_RC:0" in id_out, "Not running as user phantom!"
+
+        sudo_out = run_cmd(master_fd, "echo phantom | sudo -S id", "SUDO_RC", b"$ ")
+        assert "uid=0(root)" in sudo_out and "SUDO_RC:0" in sudo_out, "sudo failed for user phantom!"
+
+        mounts_out = run_cmd(master_fd, "cat /proc/mounts", "MNT_RC", b"$ ")
         assert " / overlay " in mounts_out, "Root filesystem is NOT OverlayFS!"
         assert "/mnt/.overlay/lower squashfs ro" in mounts_out, "Lower layer is NOT RO SquashFS!"
         assert "/var/lib/data tmpfs rw" in mounts_out, "/var/lib/data RAM disk missing!"
         assert "MNT_RC:0" in mounts_out
 
-        # Check headless mode skipped Xorg
-        ps_out = run_cmd(master_fd, "ps | grep -E 'Xorg|fluxbox' | grep -v grep || true", "PS_RC")
+        # Check headless mode skipped Xorg & Display Manager
+        ps_out = run_cmd(master_fd, "ps | grep -E 'Xorg|phantom-login|fluxbox' | grep -v grep || true", "PS_RC", b"$ ")
         assert "/usr/bin/Xorg" not in ps_out, "Xorg should not run in headless mode!"
+        assert "/usr/bin/phantom-login" not in ps_out, "Display manager should not run in headless mode!"
 
-        # Check RAM usage and create volatile file
-        ram_out = run_cmd(master_fd, "free -m", "RAM_RC")
+        # Check RAM usage and create volatile file in user home
+        ram_out = run_cmd(master_fd, "free -m", "RAM_RC", b"$ ")
         assert "RAM_RC:0" in ram_out
-        probe_out = run_cmd(master_fd, "touch /root/.stateless_probe && ls -l /root/.stateless_probe", "PROBE_RC")
+        probe_out = run_cmd(master_fd, "touch ~/.stateless_probe && ls -l ~/.stateless_probe", "PROBE_RC", b"$ ")
         assert "PROBE_RC:0" in probe_out
 
-        # Reboot and confirm probe file is discarded
-        print("\n[test] Rebooting VM to verify stateless reset...")
-        os.write(master_fd, b"reboot\n")
-        login_and_run(master_fd, boot_timeout=30.0)
+        # Reboot via sudo and verify stateless reset logging in as root
+        print("\n[test] Rebooting VM via sudo to verify stateless reset & root login...")
+        os.write(master_fd, b"sudo -n /sbin/reboot\n")
+        login_and_run(master_fd, "root", "root", b"# ", boot_timeout=30.0)
 
-        verify_out = run_cmd(master_fd, "test ! -e /root/.stateless_probe && echo CLEAN_STATELESS", "STATELESS_RC")
+        verify_out = run_cmd(master_fd, "test ! -e /home/phantom/.stateless_probe && echo CLEAN_STATELESS", "STATELESS_RC", b"# ")
         assert "CLEAN_STATELESS" in verify_out and "STATELESS_RC:0" in verify_out, (
-            "Stateless check FAILED: /root/.stateless_probe survived reboot!"
+            "Stateless check FAILED: /home/phantom/.stateless_probe survived reboot!"
         )
 
         print("\n[test] Powering off VM cleanly...")
         os.write(master_fd, b"poweroff\n")
         proc.wait(timeout=15)
-        print("[test] ALL STATELESS CHECKS PASSED!")
+        print("[test] ALL STATELESS & AUTH CHECKS PASSED!")
         return 0
     finally:
         if proc.poll() is None:
