@@ -17,7 +17,7 @@ cat << "BANNER"
  |  __/| | | | (_| | | | | || (_) | | | | | | |_| |___) |
  |_|   |_| |_|\__,_|_| |_|\__\___/|_| |_| |_|\___/|____/ 
 BANNER
-echo " >> Kernel: ${KVER} | Mode: ${ROOT_MODE}"
+echo " >> User: $(id -un) (uid=$(id -u)) | Kernel: ${KVER} | Mode: ${ROOT_MODE}"
 echo " >> RAM: ${MEM_INFO} | eth0: ${IP_ADDR}"
 echo " >> Type /opt/tui-menu/menu.sh to open Backend Lab TUI"
 echo ""

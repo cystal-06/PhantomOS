@@ -35,3 +35,9 @@ if [ -f "${MONITOR_SRC}" ] && [ -x "${CC_BIN}" ] && [ -x "${PKGCFG_BIN}" ]; then
         fi
     fi
 fi
+
+# Populate default user home from /etc/skel (ownership applied by Buildroot mkusers)
+if [ -d "${TARGET_DIR}/etc/skel" ]; then
+    mkdir -p "${TARGET_DIR}/home/phantom"
+    cp -a "${TARGET_DIR}/etc/skel/." "${TARGET_DIR}/home/phantom/"
+fi

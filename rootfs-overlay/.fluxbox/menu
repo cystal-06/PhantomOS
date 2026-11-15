@@ -18,7 +18,8 @@
   [separator]
   [reconfig] (  Reload Desktop  )
   [restart] (  Restart Fluxbox  )
+  [exit] (  Log Out  )
   [separator]
-  [exec] (  Reboot  ) {reboot}
-  [exec] (  Power Off  ) {poweroff}
+  [exec] (  Reboot  ) {sudo /sbin/reboot}
+  [exec] (  Power Off  ) {sudo /sbin/poweroff}
 [end]
