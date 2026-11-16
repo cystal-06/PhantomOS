@@ -1,0 +1,54 @@
+gtk-theme-name = "PhantomDark"
+gtk-icon-theme-name = "Adwaita"
+gtk-font-name = "Adwaita Sans 10"
+gtk-cursor-theme-name = "Adwaita"
+gtk-toolbar-style = GTK_TOOLBAR_BOTH_HORIZ
+gtk-toolbar-icon-size = GTK_ICON_SIZE_SMALL_TOOLBAR
+gtk-button-images = 1
+gtk-menu-images = 1
+gtk-enable-event-sounds = 0
+gtk-enable-input-feedback-sounds = 0
+gtk-xft-antialias = 1
+gtk-xft-hinting = 1
+gtk-xft-hintstyle = "hintslight"
+gtk-xft-rgba = "rgb"
+
+gtk-color-scheme = "base_color:#181825\nbg_color:#1e1e2e\ntooltip_bg_color:#11111b\nselected_bg_color:#89b4fa\ntext_color:#cdd6f4\nfg_color:#cdd6f4\ntooltip_fg_color:#cdd6f4\nselected_fg_color:#11111b"
+
+style "default" {
+  xthickness = 2
+  ythickness = 2
+
+  GtkWidget::focus-line-width = 1
+  GtkButton::default-border = { 0, 0, 0, 0 }
+  GtkRange::trough-border = 0
+  GtkPaned::handle-size = 6
+  GtkRange::slider-width = 15
+  GtkRange::stepper-size = 15
+  GtkScrollbar::min-slider-length = 30
+
+  bg[NORMAL]        = "#1e1e2e"
+  bg[PRELIGHT]      = "#313244"
+  bg[ACTIVE]        = "#181825"
+  bg[SELECTED]      = "#89b4fa"
+  bg[INSENSITIVE]   = "#181825"
+
+  fg[NORMAL]        = "#cdd6f4"
+  fg[PRELIGHT]      = "#ffffff"
+  fg[ACTIVE]        = "#cdd6f4"
+  fg[SELECTED]      = "#11111b"
+  fg[INSENSITIVE]   = "#585b70"
+
+  base[NORMAL]      = "#181825"
+  base[PRELIGHT]    = "#313244"
+  base[ACTIVE]      = "#1e1e2e"
+  base[SELECTED]    = "#89b4fa"
+  base[INSENSITIVE] = "#181825"
+
+  text[NORMAL]      = "#cdd6f4"
+  text[PRELIGHT]    = "#ffffff"
+  text[ACTIVE]      = "#cdd6f4"
+  text[SELECTED]    = "#11111b"
+  text[INSENSITIVE] = "#585b70"
+}
+class "GtkWidget" style "default"

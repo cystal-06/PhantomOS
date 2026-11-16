@@ -16,6 +16,9 @@ buildroot-*/
 *.ext2
 *.ext3
 *.ext4
+*.squashfs
+*.cpio
+*.cpio.gz
 *.qcow2
 *.vmdk
 *.vdi

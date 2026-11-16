@@ -1,0 +1,66 @@
+#!/bin/sh
+# ==============================================================================
+# Starts PhantomOS Display Manager (phantom-login) on Xorg (:0)
+# Skipped automatically in headless boot mode
+# ==============================================================================
+
+BIN=/usr/bin/phantom-login
+PIDFILE=/var/run/phantom-login.pid
+
+is_headless() {
+    grep -qw "headless" /proc/cmdline 2>/dev/null
+}
+
+case "$1" in
+    start)
+        if is_headless; then
+            echo "Skipping Desktop (headless mode)"
+            exit 0
+        fi
+
+        printf "Starting Display Manager (phantom-login): "
+        export DISPLAY=:0
+        export LANG=C.UTF-8
+        export LC_ALL=C.UTF-8
+
+        # Wait for Xorg socket (up to 3s)
+        TRIES=0
+        while [ ! -S /tmp/.X11-unix/X0 ] && [ "${TRIES}" -lt 30 ]; do
+            usleep 100000
+            TRIES=$((TRIES + 1))
+        done
+
+        if [ ! -S /tmp/.X11-unix/X0 ]; then
+            echo "FAIL (Xorg socket missing)"
+            exit 1
+        fi
+
+        start-stop-daemon -S -q -b -m -p "${PIDFILE}" --exec "${BIN}"
+        if [ $? -ne 0 ]; then
+            echo "FAIL"
+            exit 1
+        fi
+        echo "OK"
+        ;;
+    stop)
+        if is_headless && [ ! -f "${PIDFILE}" ]; then
+            exit 0
+        fi
+        printf "Stopping Display Manager: "
+        killall xterm 2>/dev/null || true
+        killall pcmanfm 2>/dev/null || true
+        killall fluxbox 2>/dev/null || true
+        start-stop-daemon -K -q -p "${PIDFILE}" 2>/dev/null || true
+        rm -f "${PIDFILE}"
+        echo "OK"
+        ;;
+    restart)
+        "$0" stop
+        usleep 200000
+        "$0" start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac

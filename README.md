@@ -51,14 +51,16 @@ flowchart TD
 
 ```text
 PhantomOS/
-├── configs/              # Buildroot & Linux Kernel configuration files
-├── overlayfs/            # Initramfs and stateless mount logic
-├── rootfs-overlay/       # Target filesystem overlay (daemons, services, configs)
-│   ├── etc/init.d/       # Init scripts (networking, ramdisk, service launcher)
+├── apps/                 # Native GTK2/Cairo desktop apps (phantom-login, phantom-monitor)
+├── configs/              # Buildroot, Kernel, users-table & permission configs
+├── overlayfs/            # Initramfs and stateless OverlayFS mount logic
+├── patches/              # Buildroot host compatibility patches
+├── rootfs-overlay/       # Target filesystem overlay (init scripts, Fluxbox, skel, sudoers)
+│   ├── etc/init.d/       # Init scripts (Xorg, Display Manager, RAM disk, network)
 │   └── opt/tui-menu/     # Terminal UI control dashboard
 ├── backend-sample/       # Sample RESTful backend application for load testing
 ├── benchmarks/           # Load testing scripts (k6, wrk) and metric collectors
-├── scripts/              # Automated build and emulation scripts
+├── scripts/              # Build, rootfs update, QEMU runner & stateless smoke tests
 └── docs/                 # Architecture notes and benchmarking reports
 ```
 
@@ -83,9 +85,17 @@ cd PhantomOS
 
 ### Run on QEMU
 ```bash
+# Full Desktop GUI (Display Manager + Fluxbox + VirtIO GPU)
 ./scripts/run-qemu.sh
+
+# Headless CLI profile (~22MB RAM idle, ~1.2s boot)
+./scripts/run-qemu.sh --headless
+
+# Automated stateless & sudo verification suite
+./scripts/test-stateless.sh
 ```
-* **Default Login:** `root`
+* **Standard User (`sudo`):** `phantom` / password `phantom`
+* **Administrator:** `root` / password `root`
 * **Port Forwarding:** Host `localhost:8080` forwarded to VM `8080`
 
 ---
