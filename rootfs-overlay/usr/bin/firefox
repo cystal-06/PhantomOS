@@ -1,0 +1,19 @@
+#!/bin/sh
+# PhantomOS Firefox ESR launcher wrapper
+
+FF_BIN="/opt/firefox/firefox"
+
+if [ ! -x "${FF_BIN}" ]; then
+    MSG="Firefox addon (browser.squashfs) is not mounted at /opt/firefox.\nRun ./scripts/fetch-browser.sh on the host and boot QEMU without --no-browser."
+    if [ -n "${DISPLAY:-}" ] && command -v xterm >/dev/null 2>&1; then
+        exec xterm -bg "#181825" -fg "#cdd6f4" -title "Browser Not Mounted" -e sh -c "printf '${MSG}\n\nPress Enter to close...'; read _"
+    fi
+    printf "%b\n" "${MSG}" >&2
+    exit 1
+fi
+
+mkdir -p "${HOME:-/tmp}/Downloads"
+export MOZ_ENABLE_WAYLAND=0
+export MOZ_WEBRENDER=0
+
+exec "${FF_BIN}" "$@"

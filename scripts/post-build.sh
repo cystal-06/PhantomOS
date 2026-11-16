@@ -47,7 +47,8 @@ if [ -x "${CC_BIN}" ] && [ -x "${PKGCFG_BIN}" ]; then
 fi
 
 # Populate default user home from /etc/skel (ownership applied by Buildroot mkusers)
+mkdir -p "${TARGET_DIR}/opt/firefox" "${TARGET_DIR}/root/Downloads"
 if [ -d "${TARGET_DIR}/etc/skel" ]; then
-    mkdir -p "${TARGET_DIR}/home/phantom"
+    mkdir -p "${TARGET_DIR}/etc/skel/Downloads" "${TARGET_DIR}/home/phantom"
     cp -a "${TARGET_DIR}/etc/skel/." "${TARGET_DIR}/home/phantom/"
 fi
