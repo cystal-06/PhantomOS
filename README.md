@@ -85,10 +85,16 @@ cd PhantomOS
 
 ### Run on QEMU
 ```bash
-# Full Desktop GUI (Display Manager + Fluxbox + VirtIO GPU)
+# Build optional Firefox ESR addon module (browser.squashfs)
+./scripts/fetch-browser.sh
+
+# Full Desktop GUI (Display Manager + Fluxbox + VirtIO GPU + Firefox ESR + Intel HDA Audio)
 ./scripts/run-qemu.sh
 
-# Headless CLI profile (~22MB RAM idle, ~1.2s boot)
+# Desktop without browser addon
+./scripts/run-qemu.sh --no-browser
+
+# Headless CLI profile (~22MB RAM idle, ~1.7s boot)
 ./scripts/run-qemu.sh --headless
 
 # Automated stateless & sudo verification suite

@@ -7,10 +7,12 @@ IMAGES_DIR="${BUILDROOT_DIR}/output/images"
 KERNEL_IMAGE="${IMAGES_DIR}/bzImage"
 INITRAMFS_IMAGE="${IMAGES_DIR}/initramfs.cpio.gz"
 SQUASHFS_IMAGE="${IMAGES_DIR}/rootfs.squashfs"
+BROWSER_IMAGE="${IMAGES_DIR}/browser.squashfs"
 EXT4_IMAGE="${IMAGES_DIR}/rootfs.ext4"
 
 BOOT_MODE="stateless"
 UI_MODE="desktop"
+ENABLE_BROWSER="auto"
 MEM_SIZE="2048M"
 CPUS="2"
 USE_KVM="auto"
@@ -27,6 +29,7 @@ Boot Mode:
 Display Mode:
   --desktop      Start VirtIO GPU 1280x800 + Fluxbox desktop (default)
   --headless     Serial console only (-nographic), skips Xorg/Fluxbox
+  --no-browser   Do not attach browser.squashfs addon in desktop mode
 
 Hardware & Debug:
   --mem <SIZE>   VM RAM size (default: 2048M)
@@ -41,8 +44,9 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --stateless) BOOT_MODE="stateless" ;;
         --rw|--dev)  BOOT_MODE="rw" ;;
-        --desktop)   UI_MODE="desktop" ;;
-        --headless)  UI_MODE="headless" ;;
+        --desktop)    UI_MODE="desktop" ;;
+        --headless)   UI_MODE="headless" ;;
+        --no-browser) ENABLE_BROWSER="no" ;;
         --mem)       MEM_SIZE="${2:?Missing value for --mem}"; shift ;;
         --cpus)      CPUS="${2:?Missing value for --cpus}"; shift ;;
         --no-kvm)    USE_KVM="no" ;;
@@ -106,6 +110,14 @@ else
         -usb
         -device usb-tablet
     )
+    if [ "${ENABLE_BROWSER}" != "no" ] && [ -f "${BROWSER_IMAGE}" ]; then
+        QEMU_ARGS+=(-drive "file=${BROWSER_IMAGE},if=virtio,format=raw,readonly=on")
+    fi
+    if [ -S "/run/user/$(id -u)/pulse/native" ]; then
+        QEMU_ARGS+=(-audiodev "pa,id=snd0" -device ich9-intel-hda -device "hda-duplex,audiodev=snd0")
+    else
+        QEMU_ARGS+=(-audiodev "none,id=snd0" -device ich9-intel-hda -device "hda-duplex,audiodev=snd0")
+    fi
     APPEND_OPTS+=("video=1280x800")
 fi
 

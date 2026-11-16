@@ -1,0 +1,27 @@
+#!/bin/sh
+# ==============================================================================
+# Unmutes ALSA Intel HDA / AC97 playback channels at 85%
+# Skipped automatically in headless boot mode
+# ==============================================================================
+
+is_headless() {
+    grep -qw "headless" /proc/cmdline 2>/dev/null
+}
+
+case "$1" in
+    start)
+        if is_headless || [ ! -e /proc/asound/card0 ] || [ ! -x /usr/bin/amixer ]; then
+            exit 0
+        fi
+        amixer -q sset Master 85% unmute 2>/dev/null || true
+        amixer -q sset PCM 85% unmute 2>/dev/null || true
+        amixer -q sset Headphone 85% unmute 2>/dev/null || true
+        ;;
+    stop)
+        exit 0
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac
