@@ -25,6 +25,13 @@
 #define PHANTOM_LOGIN_TITLE "PhantomOS Display Manager"
 #define SESSION_RUNNER "/usr/libexec/phantom-session"
 
+static volatile sig_atomic_t g_terminate_requested = 0;
+
+static void on_term_signal(int sig) {
+    (void)sig;
+    g_terminate_requested = 1;
+}
+
 typedef struct {
     GtkWidget *window;
     GtkWidget *top_title_label;
@@ -477,6 +484,15 @@ static gboolean verify_credentials(const char *username, const char *password, s
 
 static gboolean focus_password_idle(gpointer data) {
     LoginApp *app = (LoginApp *)data;
+    GdkCursor *cursor = gdk_cursor_new(GDK_LEFT_PTR);
+    if (cursor) {
+        GdkWindow *root = gdk_get_default_root_window();
+        if (root) gdk_window_set_cursor(root, cursor);
+        if (app->window && app->window->window) {
+            gdk_window_set_cursor(app->window->window, cursor);
+        }
+        gdk_cursor_unref(cursor);
+    }
     if (app->window && app->window->window) {
         Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
         Window xwin = GDK_WINDOW_XID(app->window->window);
@@ -486,6 +502,25 @@ static gboolean focus_password_idle(gpointer data) {
     }
     gtk_window_present(GTK_WINDOW(app->window));
     gtk_widget_grab_focus(app->pass_entry);
+    return FALSE;
+}
+
+static gboolean check_term_signal(gpointer data) {
+    LoginApp *app = (LoginApp *)data;
+    if (!g_terminate_requested) return TRUE;
+
+    if (app->session_pid > 0) {
+        kill(-app->session_pid, SIGTERM);
+        usleep(150000);
+        kill(-app->session_pid, SIGKILL);
+        waitpid(app->session_pid, NULL, WNOHANG);
+        app->session_pid = -1;
+    }
+    if (app->active_x_user[0] && strcmp(app->active_x_user, "root") != 0) {
+        grant_x11_localuser(app->active_x_user, FALSE);
+        app->active_x_user[0] = '\0';
+    }
+    gtk_main_quit();
     return FALSE;
 }
 
@@ -843,6 +878,9 @@ int main(int argc, char *argv[]) {
     refresh_user_visuals(&app);
     on_clock_tick(&app);
     g_timeout_add(1000, on_clock_tick, &app);
+    signal(SIGTERM, on_term_signal);
+    signal(SIGINT, on_term_signal);
+    g_timeout_add(250, check_term_signal, &app);
 
     gtk_widget_show_all(app.window);
     g_idle_add(focus_password_idle, &app);
