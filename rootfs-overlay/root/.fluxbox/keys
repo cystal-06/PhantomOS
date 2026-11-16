@@ -25,8 +25,8 @@ OnWindow Mod1 Mouse2 :Lower
 # control-click a window's titlebar and drag to attach windows
 OnTitlebar Control Mouse1 :StartTabbing
 
-# double click on the titlebar to shade
-OnTitlebar Double Mouse1 :Shade
+# double click on the titlebar to maximize/restore (GNOME UX)
+OnTitlebar Double Mouse1 :Maximize
 
 # left click on the titlebar to move the window
 OnTitlebar Mouse1 :MacroCmd {Raise} {Focus} {ActivateTab}
