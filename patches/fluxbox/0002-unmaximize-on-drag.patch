@@ -1,0 +1,26 @@
+--- a/src/Window.cc
++++ b/src/Window.cc
+@@ -2741,6 +2741,23 @@
+     if ((isMaximized() || isFullscreen()) && screen().getMaxDisableMove())
+         return;
+ 
++    // GNOME-like UX: dragging a maximized window automatically unmaximizes it
++    // while keeping the titlebar anchored under the cursor.
++    if ((isMaximizedHorz() || isMaximizedVert()) && !isFullscreen()) {
++        int old_w = frame().width() > 0 ? static_cast<int>(frame().width()) : 1;
++        double ratio = static_cast<double>(x - frame().x()) / static_cast<double>(old_w);
++        if (ratio < 0.0) ratio = 0.0;
++        if (ratio > 1.0) ratio = 1.0;
++
++        setMaximizedState(WindowState::MAX_NONE);
++
++        int new_w = static_cast<int>(frame().width());
++        int new_x = x - static_cast<int>(ratio * new_w);
++        int new_y = y - static_cast<int>(titlebarHeight() / 2);
++        if (new_y < 0) new_y = 0;
++        move(new_x, new_y);
++    }
++
+     // save first event point
+     m_last_resize_x = x;
+     m_last_resize_y = y;
