@@ -46,16 +46,23 @@ Mod1 Shift Tab :PrevWindow {groups} (workspace=[current])
 Mod4 Tab :NextTab
 Mod4 Shift Tab :PrevTab
 
-# go to a specific tab in the current window
-Mod4 1 :Tab 1
-Mod4 2 :Tab 2
-Mod4 3 :Tab 3
-Mod4 4 :Tab 4
-Mod4 5 :Tab 5
-Mod4 6 :Tab 6
-Mod4 7 :Tab 7
-Mod4 8 :Tab 8
-Mod4 9 :Tab 9
+# Arch/i3-style direct workspace switching (Super + 1..4, Super + Shift + 1..4)
+Mod4 1 :Workspace 1
+Mod4 2 :Workspace 2
+Mod4 3 :Workspace 3
+Mod4 4 :Workspace 4
+Mod4 Shift 1 :TakeToWorkspace 1
+Mod4 Shift 2 :TakeToWorkspace 2
+Mod4 Shift 3 :TakeToWorkspace 3
+Mod4 Shift 4 :TakeToWorkspace 4
+
+# Hold Win (Mod4) or Alt (Mod1) + mouse wheel anywhere to switch workspaces
+OnWindow OnDesktop OnTitlebar OnToolbar Mod4 Mouse4 :PrevWorkspace
+OnWindow OnDesktop OnTitlebar OnToolbar Mod4 Mouse5 :NextWorkspace
+OnWindow OnDesktop OnTitlebar OnToolbar Mod1 Mouse4 :PrevWorkspace
+OnWindow OnDesktop OnTitlebar OnToolbar Mod1 Mouse5 :NextWorkspace
+OnWindow OnDesktop OnTitlebar OnToolbar Mod4 Shift Mouse4 :TakeToPrevWorkspace
+OnWindow OnDesktop OnTitlebar OnToolbar Mod4 Shift Mouse5 :TakeToNextWorkspace
 
 # open a terminal
 Mod1 F1 :Exec xterm
@@ -135,7 +142,7 @@ Control Mod4 F9 :TakeToWorkspace 9
 Control Mod4 F10 :TakeToWorkspace 10
 Control Mod4 F11 :TakeToWorkspace 11
 Control Mod4 F12 :TakeToWorkspace 12
-Mod4 :RootMenu
+Mod4 space :RootMenu
 Control Escape :RootMenu
 Control Mod1 t :Exec xterm -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244"
 Mod4 e :Exec pcmanfm
