@@ -7,7 +7,7 @@ session.screen0.toolbar.placement: BottomCenter
 session.screen0.toolbar.widthPercent: 100
 session.screen0.toolbar.tools: workspacename, prevworkspace, nextworkspace, iconbar, clock
 session.screen0.strftimeFormat: %H:%M  |  %a %d/%m
-session.screen0.workspaceNames: 1: Apps, 2: Lab, 3: Files, 4: System
+session.screen0.workspaceNames: Workspace 1, Workspace 2, Workspace 3, Workspace 4
 session.screen0.iconbar.mode: {static groups} (workspace)
 session.screen0.iconbar.alignment: Left
 session.screen0.iconbar.iconWidth: 180
