@@ -1,0 +1,122 @@
+#!/bin/sh
+#
+# Configure Arch-style ZRAM compressed swap (100% of physical RAM, zstd)
+#
+
+ZRAM_DEV="/dev/zram0"
+ZRAM_SYS="/sys/block/zram0"
+
+ensure_zram_node() {
+    if [ ! -b "${ZRAM_DEV}" ] && [ -r "${ZRAM_SYS}/dev" ]; then
+        IFS=: read -r major minor < "${ZRAM_SYS}/dev"
+        [ -n "${major}" ] && [ -n "${minor}" ] && mknod "${ZRAM_DEV}" b "${major}" "${minor}" 2>/dev/null || true
+    fi
+}
+
+apply_vm_tuning() {
+    for kv in \
+        "swappiness:180" \
+        "page-cluster:0" \
+        "watermark_boost_factor:0" \
+        "watermark_scale_factor:125"
+    do
+        key="${kv%%:*}"
+        val="${kv##*:}"
+        if [ -w "/proc/sys/vm/${key}" ]; then
+            echo "${val}" > "/proc/sys/vm/${key}"
+        fi
+    done
+}
+
+start() {
+    if [ ! -d "${ZRAM_SYS}" ]; then
+        echo "zram: ${ZRAM_SYS} not present, skipping"
+        return 0
+    fi
+
+    if grep -q "${ZRAM_DEV}" /proc/swaps 2>/dev/null; then
+        apply_vm_tuning
+        return 0
+    fi
+
+    ensure_zram_node
+    if [ ! -b "${ZRAM_DEV}" ]; then
+        echo "zram: ${ZRAM_DEV} missing, skipping"
+        return 1
+    fi
+
+    mem_kb=0
+    while read -r key val _; do
+        if [ "${key}" = "MemTotal:" ]; then
+            mem_kb="${val}"
+            break
+        fi
+    done < /proc/meminfo
+
+    if [ -z "${mem_kb}" ] || [ "${mem_kb}" -le 0 ] 2>/dev/null; then
+        echo "zram: failed to read MemTotal"
+        return 1
+    fi
+
+    # 100% RAM size (matches Arch zram-generator ram/1:1 layout)
+    zram_bytes=$((mem_kb * 1024))
+
+    printf "Starting zram0 (%d MB, zstd): " "$((mem_kb / 1024))"
+    echo 1 > "${ZRAM_SYS}/reset" 2>/dev/null || true
+
+    if grep -qw "zstd" "${ZRAM_SYS}/comp_algorithm" 2>/dev/null; then
+        echo "zstd" > "${ZRAM_SYS}/comp_algorithm" 2>/dev/null || true
+    fi
+
+    echo "${zram_bytes}" > "${ZRAM_SYS}/disksize"
+    /sbin/mkswap "${ZRAM_DEV}" >/dev/null
+    /sbin/swapon "${ZRAM_DEV}"
+    apply_vm_tuning
+    echo "OK"
+}
+
+stop() {
+    printf "Stopping zram0: "
+    if grep -q "${ZRAM_DEV}" /proc/swaps 2>/dev/null; then
+        /sbin/swapoff "${ZRAM_DEV}"
+    fi
+    if [ -w "${ZRAM_SYS}/reset" ]; then
+        echo 1 > "${ZRAM_SYS}/reset" 2>/dev/null || true
+    fi
+    echo "OK"
+}
+
+status() {
+    if [ -r "${ZRAM_SYS}/comp_algorithm" ]; then
+        echo "Algorithm: $(cat "${ZRAM_SYS}/comp_algorithm")"
+    fi
+    if [ -r "${ZRAM_SYS}/disksize" ]; then
+        echo "Disksize:  $(cat "${ZRAM_SYS}/disksize") bytes"
+    fi
+    if [ -r "${ZRAM_SYS}/mm_stat" ]; then
+        echo "mm_stat:   $(cat "${ZRAM_SYS}/mm_stat")"
+    fi
+    cat /proc/swaps
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit $?

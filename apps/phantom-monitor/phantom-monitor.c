@@ -47,6 +47,14 @@ typedef struct {
     double mem_total_mb;
     double mem_cache_mb;
     double mem_pct;
+    double swap_history[HISTORY_LEN];
+    double swap_used_mb;
+    double swap_total_mb;
+    double swap_pct;
+    double zram_orig_mb;
+    double zram_compr_mb;
+    double zram_mem_mb;
+    char zram_algo[16];
     double ramdisk_used_mb;
     double ramdisk_total_mb;
     double overlay_used_mb;
@@ -201,26 +209,66 @@ static void read_mem_and_disks(AppState *st) {
     if (fp) {
         char key[64];
         unsigned long long val = 0;
-        unsigned long long total = 0, mfree = 0, buffers = 0, cached = 0, srecl = 0;
+        unsigned long long total = 0, avail = 0, mfree = 0, buffers = 0, cached = 0, srecl = 0;
+        unsigned long long swap_tot = 0, swap_free = 0;
+        int has_avail = 0;
         char line[256];
         while (fgets(line, sizeof(line), fp)) {
             if (sscanf(line, "%63[^:]: %llu", key, &val) == 2) {
                 if (strcmp(key, "MemTotal") == 0) total = val;
+                else if (strcmp(key, "MemAvailable") == 0) { avail = val; has_avail = 1; }
                 else if (strcmp(key, "MemFree") == 0) mfree = val;
                 else if (strcmp(key, "Buffers") == 0) buffers = val;
                 else if (strcmp(key, "Cached") == 0) cached = val;
                 else if (strcmp(key, "SReclaimable") == 0) srecl = val;
+                else if (strcmp(key, "SwapTotal") == 0) swap_tot = val;
+                else if (strcmp(key, "SwapFree") == 0) swap_free = val;
             }
         }
         fclose(fp);
 
-        long long used = (long long)total - (long long)mfree - (long long)buffers - (long long)cached - (long long)srecl;
-        if (used < 0) used = 0;
+        if (!has_avail) avail = mfree + buffers + cached + srecl;
+        unsigned long long used = (total > avail) ? (total - avail) : 0;
         st->mem_total_mb = (double)total / 1024.0;
         st->mem_used_mb = (double)used / 1024.0;
         st->mem_cache_mb = (double)(buffers + cached + srecl) / 1024.0;
         st->mem_pct = st->mem_total_mb > 0 ? (100.0 * st->mem_used_mb / st->mem_total_mb) : 0.0;
         push_history(st->mem_history, st->mem_pct);
+
+        unsigned long long swap_used = (swap_tot > swap_free) ? (swap_tot - swap_free) : 0;
+        st->swap_total_mb = (double)swap_tot / 1024.0;
+        st->swap_used_mb = (double)swap_used / 1024.0;
+        st->swap_pct = st->swap_total_mb > 0 ? (100.0 * st->swap_used_mb / st->swap_total_mb) : 0.0;
+        push_history(st->swap_history, st->swap_pct);
+    }
+
+    st->zram_orig_mb = 0.0;
+    st->zram_compr_mb = 0.0;
+    st->zram_mem_mb = 0.0;
+    st->zram_algo[0] = '\0';
+    FILE *zm = fopen("/sys/block/zram0/mm_stat", "r");
+    if (zm) {
+        unsigned long long orig_b = 0, compr_b = 0, mem_b = 0;
+        if (fscanf(zm, "%llu %llu %llu", &orig_b, &compr_b, &mem_b) == 3) {
+            st->zram_orig_mb = (double)orig_b / (1024.0 * 1024.0);
+            st->zram_compr_mb = (double)compr_b / (1024.0 * 1024.0);
+            st->zram_mem_mb = (double)mem_b / (1024.0 * 1024.0);
+        }
+        fclose(zm);
+    }
+    FILE *za = fopen("/sys/block/zram0/comp_algorithm", "r");
+    if (za) {
+        char buf[128];
+        if (fgets(buf, sizeof(buf), za)) {
+            char *lb = strchr(buf, '[');
+            char *rb = lb ? strchr(lb + 1, ']') : NULL;
+            if (lb && rb && (size_t)(rb - lb - 1) < sizeof(st->zram_algo)) {
+                size_t len = (size_t)(rb - lb - 1);
+                memcpy(st->zram_algo, lb + 1, len);
+                st->zram_algo[len] = '\0';
+            }
+        }
+        fclose(za);
     }
 
     struct statvfs vfs;
@@ -508,8 +556,9 @@ static gboolean on_cpu_expose(GtkWidget *w, GdkEventExpose *ev, gpointer data) {
 static gboolean on_mem_expose(GtkWidget *w, GdkEventExpose *ev, gpointer data) {
     (void)ev;
     AppState *st = (AppState *)data;
-    draw_graph(w, st->mem_history, NULL, 100.0, "100%",
-               0.651, 0.890, 0.631, 0, 0, 0); /* #a6e3a1 */
+    draw_graph(w, st->mem_history, st->swap_total_mb > 0.0 ? st->swap_history : NULL, 100.0, "100%",
+               0.651, 0.890, 0.631,   /* #a6e3a1 RAM */
+               0.796, 0.651, 0.969);  /* #cba6f7 ZRAM Swap */
     return FALSE;
 }
 
@@ -547,9 +596,29 @@ static void update_labels(AppState *st) {
              st->current_cpu, st->num_cores, st->load_avg);
     gtk_label_set_markup(GTK_LABEL(st->cpu_label), buf);
 
-    snprintf(buf, sizeof(buf),
-             "<b>Memory:</b> <span foreground='#a6e3a1'><b>%.0f / %.0f MB (%.1f%%)</b></span>   |   Buffers/Cache: %.0f MB",
-             st->mem_used_mb, st->mem_total_mb, st->mem_pct, st->mem_cache_mb);
+    if (st->swap_total_mb > 0.0) {
+        if (st->zram_mem_mb > 0.05 && st->zram_orig_mb > 0.05) {
+            double ratio = st->zram_orig_mb / st->zram_mem_mb;
+            snprintf(buf, sizeof(buf),
+                     "<b>Memory:</b> <span foreground='#a6e3a1'><b>%.0f / %.0f MB (%.1f%%)</b></span>  |  Cache: %.0f MB\n"
+                     "<b>ZRAM Swap (%s):</b> <span foreground='#cba6f7'><b>%.0f / %.0f MB (%.1f%%)</b></span>  |  In RAM: %.1f MB (%.2fx)",
+                     st->mem_used_mb, st->mem_total_mb, st->mem_pct, st->mem_cache_mb,
+                     st->zram_algo[0] ? st->zram_algo : "zram",
+                     st->swap_used_mb, st->swap_total_mb, st->swap_pct,
+                     st->zram_mem_mb, ratio);
+        } else {
+            snprintf(buf, sizeof(buf),
+                     "<b>Memory:</b> <span foreground='#a6e3a1'><b>%.0f / %.0f MB (%.1f%%)</b></span>  |  Cache: %.0f MB\n"
+                     "<b>ZRAM Swap (%s):</b> <span foreground='#cba6f7'><b>%.0f / %.0f MB (%.1f%%)</b></span>  |  In RAM: 0 MB (Idle)",
+                     st->mem_used_mb, st->mem_total_mb, st->mem_pct, st->mem_cache_mb,
+                     st->zram_algo[0] ? st->zram_algo : "zram",
+                     st->swap_used_mb, st->swap_total_mb, st->swap_pct);
+        }
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "<b>Memory:</b> <span foreground='#a6e3a1'><b>%.0f / %.0f MB (%.1f%%)</b></span>   |   Buffers/Cache: %.0f MB",
+                 st->mem_used_mb, st->mem_total_mb, st->mem_pct, st->mem_cache_mb);
+    }
     gtk_label_set_markup(GTK_LABEL(st->mem_label), buf);
 
     snprintf(buf, sizeof(buf),

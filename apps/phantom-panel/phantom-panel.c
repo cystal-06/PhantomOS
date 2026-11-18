@@ -37,13 +37,33 @@ typedef struct {
     double cpu_pct;
     double cpu_ghz;
 
-    /* RAM & Disk */
+    /* RAM, ZRAM Swap & Disk */
     double ram_pct;
     double ram_used_mb;
     double ram_total_mb;
+    double ram_avail_mb;
+    double ram_cache_mb;
+    double swap_pct;
+    double swap_used_mb;
+    double swap_total_mb;
+    double zram_orig_mb;
+    double zram_compr_mb;
+    double zram_mem_mb;
+    char zram_algo[16];
+    double ram_hist[HIST_LEN];
+    double swap_hist[HIST_LEN];
     double disk_pct;
     double disk_used_mb;
     double disk_total_mb;
+
+    /* Memory / ZRAM Popup */
+    GtkWidget *ram_popup;
+    GtkWidget *ram_popup_area;
+    Rect r_popup_mon;
+    double popup_hx;
+    double popup_hy;
+    int popup_hover;
+    gint64 popup_hidden_us;
 
     /* Network */
     unsigned long long prev_rx;
@@ -197,6 +217,7 @@ static void sample_mem_disk(PanelApp *app) {
     FILE *fp = fopen("/proc/meminfo", "r");
     if (fp) {
         unsigned long tot=0, avail=0, fre=0, buf=0, cac=0, sre=0;
+        unsigned long swap_tot=0, swap_free=0;
         int has_avail = 0;
         char k[64];
         unsigned long v;
@@ -207,13 +228,53 @@ static void sample_mem_disk(PanelApp *app) {
             else if (strcmp(k, "Buffers:") == 0) buf = v;
             else if (strcmp(k, "Cached:") == 0) cac = v;
             else if (strcmp(k, "SReclaimable:") == 0) sre = v;
+            else if (strcmp(k, "SwapTotal:") == 0) swap_tot = v;
+            else if (strcmp(k, "SwapFree:") == 0) swap_free = v;
         }
         fclose(fp);
         if (!has_avail) avail = fre + buf + cac + sre;
         unsigned long used = (tot > avail) ? (tot - avail) : 0;
         app->ram_total_mb = (double)tot / 1024.0;
         app->ram_used_mb = (double)used / 1024.0;
+        app->ram_avail_mb = (double)avail / 1024.0;
+        app->ram_cache_mb = (double)(buf + cac + sre) / 1024.0;
         app->ram_pct = (tot > 0) ? (100.0 * (double)used / (double)tot) : 0.0;
+        push_hist(app->ram_hist, app->ram_pct);
+
+        unsigned long swap_used = (swap_tot > swap_free) ? (swap_tot - swap_free) : 0;
+        app->swap_total_mb = (double)swap_tot / 1024.0;
+        app->swap_used_mb = (double)swap_used / 1024.0;
+        app->swap_pct = (swap_tot > 0) ? (100.0 * (double)swap_used / (double)swap_tot) : 0.0;
+        push_hist(app->swap_hist, app->swap_pct);
+    }
+
+    app->zram_orig_mb = 0.0;
+    app->zram_compr_mb = 0.0;
+    app->zram_mem_mb = 0.0;
+    app->zram_algo[0] = '\0';
+    FILE *zm = fopen("/sys/block/zram0/mm_stat", "r");
+    if (zm) {
+        unsigned long long orig_b = 0, compr_b = 0, mem_b = 0;
+        if (fscanf(zm, "%llu %llu %llu", &orig_b, &compr_b, &mem_b) == 3) {
+            app->zram_orig_mb = (double)orig_b / (1024.0 * 1024.0);
+            app->zram_compr_mb = (double)compr_b / (1024.0 * 1024.0);
+            app->zram_mem_mb = (double)mem_b / (1024.0 * 1024.0);
+        }
+        fclose(zm);
+    }
+    FILE *za = fopen("/sys/block/zram0/comp_algorithm", "r");
+    if (za) {
+        char buf[128];
+        if (fgets(buf, sizeof(buf), za)) {
+            char *lb = strchr(buf, '[');
+            char *rb = lb ? strchr(lb + 1, ']') : NULL;
+            if (lb && rb && (size_t)(rb - lb - 1) < sizeof(app->zram_algo)) {
+                size_t len = (size_t)(rb - lb - 1);
+                memcpy(app->zram_algo, lb + 1, len);
+                app->zram_algo[len] = '\0';
+            }
+        }
+        fclose(za);
     }
 
     struct statvfs st;
@@ -423,7 +484,8 @@ static void draw_speaker_icon(cairo_t *cr, double x, double y, int muted) {
     }
 }
 
-static void draw_vertical_gauge(cairo_t *cr, double x, double y, double pct) {
+static void draw_vertical_gauge_col(cairo_t *cr, double x, double y, double pct,
+                                    double r, double g, double b) {
     if (pct < 0.0) pct = 0.0;
     if (pct > 100.0) pct = 100.0;
     double w = 6.0, h = 16.0;
@@ -439,10 +501,14 @@ static void draw_vertical_gauge(cairo_t *cr, double x, double y, double pct) {
     if (fh > 0.0) {
         if (pct > 85.0) cairo_set_source_rgb(cr, 0.953, 0.545, 0.659);
         else if (pct > 65.0) cairo_set_source_rgb(cr, 0.980, 0.702, 0.529);
-        else cairo_set_source_rgb(cr, 0.133, 0.827, 0.933);
+        else cairo_set_source_rgb(cr, r, g, b);
         rounded_rect(cr, x + 1.0, y + h - 1.0 - fh, w - 2.0, fh, 1.2);
         cairo_fill(cr);
     }
+}
+
+static void draw_vertical_gauge(cairo_t *cr, double x, double y, double pct) {
+    draw_vertical_gauge_col(cr, x, y, pct, 0.133, 0.827, 0.933);
 }
 
 static void draw_sparkline(cairo_t *cr, double x, double y, double w, double h,
@@ -502,6 +568,23 @@ static void draw_sparkline(cairo_t *cr, double x, double y, double w, double h,
         cairo_stroke(cr);
     }
     cairo_restore(cr);
+}
+
+static void fmt_size_mb(char *buf, size_t n, double mb, int zero_dash) {
+    if (zero_dash && mb < 0.05) {
+        snprintf(buf, n, "0 B");
+    } else if (mb >= 1024.0) {
+        snprintf(buf, n, "%.2f GB", mb / 1024.0);
+    } else if (mb >= 1.0) {
+        snprintf(buf, n, "%.1f MB", mb);
+    } else {
+        snprintf(buf, n, "%.0f KB", mb * 1024.0);
+    }
+}
+
+static void fmt_short_mb(char *buf, size_t n, double mb) {
+    if (mb >= 1024.0) snprintf(buf, n, "%.1fG", mb / 1024.0);
+    else snprintf(buf, n, "%.0fM", mb);
 }
 
 static void draw_text(cairo_t *cr, double x, double y, const char *txt,
@@ -640,16 +723,39 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     else snprintf(dtxt, sizeof(dtxt), "%.0fM", app->disk_used_mb);
     draw_text(cr, rx + 32, 17.5, dtxt, 0.729, 0.761, 0.871, 0, 10.5);
 
-    /* RAM Widget */
-    double ram_w = 108.0;
+    /* RAM + ZRAM Widget */
+    char rtxt[64], ztxt[64], rb[16], rtb[16], zb[16], ztb[16];
+    fmt_short_mb(rb, sizeof(rb), app->ram_used_mb);
+    fmt_short_mb(rtb, sizeof(rtb), app->ram_total_mb);
+    snprintf(rtxt, sizeof(rtxt), "%s/%s", rb, rtb);
+
+    cairo_text_extents_t r_ext;
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 10.0);
+    cairo_text_extents(cr, rtxt, &r_ext);
+
+    double ram_w = 34.0 + r_ext.width + 6.0;
+    cairo_text_extents_t z_ext = { 0 };
+    if (app->swap_total_mb > 0.0) {
+        fmt_short_mb(zb, sizeof(zb), app->swap_used_mb);
+        fmt_short_mb(ztb, sizeof(ztb), app->swap_total_mb);
+        snprintf(ztxt, sizeof(ztxt), "Z:%s/%s", zb, ztb);
+        cairo_text_extents(cr, ztxt, &z_ext);
+        ram_w = 42.0 + r_ext.width + 8.0 + z_ext.width + 6.0;
+    }
+
     rx -= (ram_w + 6.0);
     app->r_ram = (Rect){ rx, 3, ram_w, 21 };
     draw_hover_pill(cr, app, app->r_ram);
     draw_ram_icon(cr, rx + 4, 6);
     draw_vertical_gauge(cr, rx + 22, 5.5, app->ram_pct);
-    char rtxt[32];
-    snprintf(rtxt, sizeof(rtxt), "%.0fM/%.1fG", app->ram_used_mb, app->ram_total_mb / 1024.0);
-    draw_text(cr, rx + 32, 17.5, rtxt, 0.651, 0.890, 0.631, 1, 10.0);
+    if (app->swap_total_mb > 0.0) {
+        draw_vertical_gauge_col(cr, rx + 30, 5.5, app->swap_pct, 0.796, 0.651, 0.969);
+        draw_text(cr, rx + 40, 17.5, rtxt, 0.651, 0.890, 0.631, 1, 10.0);
+        draw_text(cr, rx + 40 + r_ext.width + 7.0, 17.5, ztxt, 0.796, 0.651, 0.969, 1, 10.0);
+    } else {
+        draw_text(cr, rx + 32, 17.5, rtxt, 0.651, 0.890, 0.631, 1, 10.0);
+    }
 
     /* CPU Widget */
     double cpu_w = 158.0;
@@ -667,6 +773,219 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
 
     cairo_destroy(cr);
     return TRUE;
+}
+
+static void draw_text_right(cairo_t *cr, double rx, double y, const char *txt,
+                            double r, double g, double b, int bold, double sz) {
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+                           bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(cr, sz);
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, txt, &ext);
+    cairo_set_source_rgb(cr, r, g, b);
+    cairo_move_to(cr, rx - ext.width - ext.x_bearing, y);
+    cairo_show_text(cr, txt);
+}
+
+static void draw_hbar(cairo_t *cr, double x, double y, double w, double h, double pct,
+                      double r, double g, double b) {
+    if (pct < 0.0) pct = 0.0;
+    if (pct > 100.0) pct = 100.0;
+    rounded_rect(cr, x, y, w, h, 3.0);
+    cairo_set_source_rgb(cr, 0.094, 0.094, 0.145);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.271, 0.278, 0.353);
+    cairo_set_line_width(cr, 1.0);
+    cairo_stroke(cr);
+    double fw = (w - 2.0) * (pct / 100.0);
+    if (fw < 3.0 && pct > 0.0) fw = 3.0;
+    if (fw > 0.0) {
+        rounded_rect(cr, x + 1.0, y + 1.0, fw, h - 2.0, 2.0);
+        cairo_set_source_rgb(cr, r, g, b);
+        cairo_fill(cr);
+    }
+}
+
+static gboolean on_ram_popup_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
+    (void)event;
+    PanelApp *app = (PanelApp *)data;
+    cairo_t *cr = gdk_cairo_create(widget->window);
+    double w = (double)widget->allocation.width;
+    double h = (double)widget->allocation.height;
+
+    rounded_rect(cr, 0.5, 0.5, w - 1.0, h - 1.0, 8.0);
+    cairo_set_source_rgb(cr, 0.118, 0.118, 0.180);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.271, 0.278, 0.353);
+    cairo_set_line_width(cr, 1.0);
+    cairo_stroke(cr);
+
+    double pad = 14.0;
+    double rw = w - 2.0 * pad;
+    double y = 22.0;
+
+    draw_text(cr, w * 0.5 - 24.0, y, "Memory", 0.804, 0.839, 0.957, 1, 11.5);
+    y += 18.0;
+
+    char vbuf[64];
+    const char *lbls[4] = { "Total:", "Used:", "Cache / Buf:", "Available:" };
+    double vals[4] = { app->ram_total_mb, app->ram_used_mb, app->ram_cache_mb, app->ram_avail_mb };
+    for (int i = 0; i < 4; i++) {
+        draw_text(cr, pad, y, lbls[i], 0.729, 0.761, 0.871, 0, 10.5);
+        fmt_size_mb(vbuf, sizeof(vbuf), vals[i], 0);
+        draw_text_right(cr, w - pad, y, vbuf, 0.804, 0.839, 0.957, i == 1, 10.5);
+        y += 17.0;
+    }
+
+    draw_hbar(cr, pad, y - 6.0, rw - 38.0, 10.0, app->ram_pct, 0.133, 0.827, 0.933);
+    snprintf(vbuf, sizeof(vbuf), "%.0f%%", app->ram_pct);
+    draw_text_right(cr, w - pad, y + 3.0, vbuf, 0.651, 0.890, 0.631, 1, 10.0);
+    y += 14.0;
+
+    draw_sparkline(cr, pad, y, rw - 34.0, 56.0, app->ram_hist,
+                   app->swap_total_mb > 0.0 ? app->swap_hist : NULL, 100.0);
+    draw_text_right(cr, w - pad, y + 10.0, "100%", 0.580, 0.616, 0.725, 0, 9.0);
+    draw_text_right(cr, w - pad, y + 32.0, "50%", 0.580, 0.616, 0.725, 0, 9.0);
+    draw_text_right(cr, w - pad, y + 54.0, "0%", 0.580, 0.616, 0.725, 0, 9.0);
+    y += 66.0;
+
+    cairo_set_source_rgb(cr, 0.192, 0.196, 0.267);
+    cairo_set_line_width(cr, 1.0);
+    cairo_move_to(cr, pad, y);
+    cairo_line_to(cr, w - pad, y);
+    cairo_stroke(cr);
+    y += 18.0;
+
+    char title[48];
+    if (app->zram_algo[0]) snprintf(title, sizeof(title), "ZRAM Swap (%s)", app->zram_algo);
+    else snprintf(title, sizeof(title), "Swap");
+    draw_text(cr, w * 0.5 - 48.0, y, title, 0.796, 0.651, 0.969, 1, 11.0);
+    y += 14.0;
+
+    draw_hbar(cr, pad, y, rw - 38.0, 10.0, app->swap_pct, 0.796, 0.651, 0.969);
+    snprintf(vbuf, sizeof(vbuf), "%.0f%%", app->swap_pct);
+    draw_text_right(cr, w - pad, y + 9.0, vbuf, 0.796, 0.651, 0.969, 1, 10.0);
+    y += 25.0;
+
+    draw_text(cr, pad, y, "Used:", 0.729, 0.761, 0.871, 0, 10.5);
+    fmt_size_mb(vbuf, sizeof(vbuf), app->swap_used_mb, 1);
+    draw_text_right(cr, w - pad, y, vbuf, 0.804, 0.839, 0.957, 1, 10.5);
+    y += 17.0;
+
+    draw_text(cr, pad, y, "Total:", 0.729, 0.761, 0.871, 0, 10.5);
+    fmt_size_mb(vbuf, sizeof(vbuf), app->swap_total_mb, 1);
+    draw_text_right(cr, w - pad, y, vbuf, 0.804, 0.839, 0.957, 0, 10.5);
+    y += 17.0;
+
+    draw_text(cr, pad, y, "In RAM (compr):", 0.729, 0.761, 0.871, 0, 10.5);
+    if (app->zram_mem_mb > 0.05 && app->zram_orig_mb > 0.05) {
+        char mbuf[24];
+        fmt_size_mb(mbuf, sizeof(mbuf), app->zram_mem_mb, 0);
+        snprintf(vbuf, sizeof(vbuf), "%s (%.2fx)", mbuf, app->zram_orig_mb / app->zram_mem_mb);
+    } else {
+        snprintf(vbuf, sizeof(vbuf), "0 B (Idle)");
+    }
+    draw_text_right(cr, w - pad, y, vbuf, 0.580, 0.886, 0.835, 0, 10.0);
+    y += 18.0;
+
+    /* System Monitor quick button */
+    double bw = 136.0, bh = 24.0;
+    double bx = (w - bw) * 0.5;
+    app->r_popup_mon = (Rect){ bx, y, bw, bh };
+    int hov = app->popup_hover && pt_in_rect(app->popup_hx, app->popup_hy, app->r_popup_mon);
+    rounded_rect(cr, bx, y, bw, bh, 6.0);
+    cairo_set_source_rgb(cr, hov ? 0.271 : 0.192, hov ? 0.278 : 0.196, hov ? 0.353 : 0.267);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.537, 0.706, 0.980);
+    cairo_set_line_width(cr, 1.0);
+    cairo_stroke(cr);
+    draw_text(cr, bx + 16.0, y + 16.0, "System Monitor", 0.804, 0.839, 0.957, 1, 10.0);
+
+    cairo_destroy(cr);
+    return TRUE;
+}
+
+static gboolean on_ram_popup_button(GtkWidget *w, GdkEventButton *ev, gpointer data) {
+    (void)w;
+    PanelApp *app = (PanelApp *)data;
+    if (ev->button == 1 && pt_in_rect(ev->x, ev->y, app->r_popup_mon)) {
+        gtk_widget_hide(app->ram_popup);
+        spawn_cmd("/usr/bin/phantom-monitor");
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static gboolean on_ram_popup_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data) {
+    (void)w;
+    PanelApp *app = (PanelApp *)data;
+    app->popup_hx = ev->x;
+    app->popup_hy = ev->y;
+    app->popup_hover = 1;
+    gtk_widget_queue_draw(app->ram_popup_area);
+    return FALSE;
+}
+
+static gboolean on_ram_popup_focus_out(GtkWidget *w, GdkEventFocus *ev, gpointer data) {
+    (void)w;
+    (void)ev;
+    PanelApp *app = (PanelApp *)data;
+    app->popup_hidden_us = g_get_monotonic_time();
+    gtk_widget_hide(app->ram_popup);
+    return FALSE;
+}
+
+static gboolean on_ram_popup_key(GtkWidget *w, GdkEventKey *ev, gpointer data) {
+    (void)w;
+    PanelApp *app = (PanelApp *)data;
+    if (ev->keyval == 0xff1b) {
+        gtk_widget_hide(app->ram_popup);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void toggle_ram_popup(PanelApp *app) {
+    const int pw = 268;
+    const int ph = 334;
+    if (!app->ram_popup) {
+        app->ram_popup = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_title(GTK_WINDOW(app->ram_popup), "phantom-panel-ram");
+        gtk_window_set_decorated(GTK_WINDOW(app->ram_popup), FALSE);
+        gtk_window_set_skip_taskbar_hint(GTK_WINDOW(app->ram_popup), TRUE);
+        gtk_window_set_skip_pager_hint(GTK_WINDOW(app->ram_popup), TRUE);
+        gtk_window_set_type_hint(GTK_WINDOW(app->ram_popup), GDK_WINDOW_TYPE_HINT_UTILITY);
+        gtk_window_set_default_size(GTK_WINDOW(app->ram_popup), pw, ph);
+        gtk_widget_set_size_request(app->ram_popup, pw, ph);
+        gtk_window_stick(GTK_WINDOW(app->ram_popup));
+
+        app->ram_popup_area = gtk_drawing_area_new();
+        gtk_widget_add_events(app->ram_popup_area, GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK);
+        g_signal_connect(app->ram_popup_area, "expose-event", G_CALLBACK(on_ram_popup_expose), app);
+        g_signal_connect(app->ram_popup_area, "button-press-event", G_CALLBACK(on_ram_popup_button), app);
+        g_signal_connect(app->ram_popup_area, "motion-notify-event", G_CALLBACK(on_ram_popup_motion), app);
+        g_signal_connect(app->ram_popup, "focus-out-event", G_CALLBACK(on_ram_popup_focus_out), app);
+        g_signal_connect(app->ram_popup, "key-press-event", G_CALLBACK(on_ram_popup_key), app);
+        gtk_container_add(GTK_CONTAINER(app->ram_popup), app->ram_popup_area);
+        gtk_widget_show(app->ram_popup_area);
+    }
+
+    if (GTK_WIDGET_VISIBLE(app->ram_popup)) {
+        gtk_widget_hide(app->ram_popup);
+        return;
+    }
+    if ((g_get_monotonic_time() - app->popup_hidden_us) < 220000) {
+        return;
+    }
+
+    int px = (int)(app->r_ram.x + (app->r_ram.w - pw) * 0.5);
+    if (px < 6) px = 6;
+    if (px + pw > app->width - 6) px = app->width - pw - 6;
+    gtk_window_move(GTK_WINDOW(app->ram_popup), px, PANEL_HEIGHT + 2);
+    gtk_widget_show_all(app->ram_popup);
+    gtk_window_move(GTK_WINDOW(app->ram_popup), px, PANEL_HEIGHT + 2);
+    gtk_window_present(GTK_WINDOW(app->ram_popup));
+    gtk_widget_queue_draw(app->ram_popup_area);
 }
 
 static void show_power_menu(PanelApp *app, GdkEventButton *ev) {
@@ -706,8 +1025,9 @@ static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
         spawn_cmd("/usr/bin/firefox");
     } else if (pt_in_rect(ev->x, ev->y, app->r_files)) {
         spawn_cmd("/usr/bin/pcmanfm");
+    } else if (pt_in_rect(ev->x, ev->y, app->r_ram)) {
+        toggle_ram_popup(app);
     } else if (pt_in_rect(ev->x, ev->y, app->r_cpu) ||
-               pt_in_rect(ev->x, ev->y, app->r_ram) ||
                pt_in_rect(ev->x, ev->y, app->r_disk) ||
                pt_in_rect(ev->x, ev->y, app->r_net)) {
         spawn_cmd("/usr/bin/phantom-monitor");
@@ -759,6 +1079,9 @@ static gboolean on_tick(gpointer data) {
     PanelApp *app = (PanelApp *)data;
     sample_all(app);
     gtk_widget_queue_draw(app->area);
+    if (app->ram_popup && GTK_WIDGET_VISIBLE(app->ram_popup)) {
+        gtk_widget_queue_draw(app->ram_popup_area);
+    }
     return TRUE;
 }
 
