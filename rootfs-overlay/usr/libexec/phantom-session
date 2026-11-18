@@ -5,6 +5,9 @@
 SESSION_TYPE="${1:-desktop}"
 
 cleanup_session() {
+    if [ -n "${PANEL_PID:-}" ]; then
+        kill "${PANEL_PID}" 2>/dev/null || true
+    fi
     if [ -n "${GESTURES_PID:-}" ]; then
         kill "${GESTURES_PID}" 2>/dev/null || true
     fi
@@ -36,6 +39,11 @@ usleep 250000
 /usr/bin/pcmanfm --desktop >/dev/null 2>&1 &
 PCMANFM_PID=$!
 usleep 150000
+
+if [ -x /usr/bin/phantom-panel ]; then
+    /usr/bin/phantom-panel >/dev/null 2>&1 &
+    PANEL_PID=$!
+fi
 
 if [ -x /usr/bin/phantom-gestures ]; then
     /usr/bin/phantom-gestures >/dev/null 2>&1 &
