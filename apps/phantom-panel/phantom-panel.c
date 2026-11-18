@@ -196,18 +196,20 @@ static void sample_cpu(PanelApp *app) {
 static void sample_mem_disk(PanelApp *app) {
     FILE *fp = fopen("/proc/meminfo", "r");
     if (fp) {
-        unsigned long tot=0, fre=0, buf=0, cac=0, sre=0;
+        unsigned long tot=0, avail=0, fre=0, buf=0, cac=0, sre=0;
+        int has_avail = 0;
         char k[64];
         unsigned long v;
         while (fscanf(fp, "%63s %lu kB%*[^\n]", k, &v) == 2) {
             if (strcmp(k, "MemTotal:") == 0) tot = v;
+            else if (strcmp(k, "MemAvailable:") == 0) { avail = v; has_avail = 1; }
             else if (strcmp(k, "MemFree:") == 0) fre = v;
             else if (strcmp(k, "Buffers:") == 0) buf = v;
             else if (strcmp(k, "Cached:") == 0) cac = v;
             else if (strcmp(k, "SReclaimable:") == 0) sre = v;
         }
         fclose(fp);
-        unsigned long avail = fre + buf + cac + sre;
+        if (!has_avail) avail = fre + buf + cac + sre;
         unsigned long used = (tot > avail) ? (tot - avail) : 0;
         app->ram_total_mb = (double)tot / 1024.0;
         app->ram_used_mb = (double)used / 1024.0;
@@ -215,23 +217,31 @@ static void sample_mem_disk(PanelApp *app) {
     }
 
     struct statvfs st;
-    if (statvfs("/var/lib/data", &st) == 0 && st.f_blocks > 0) {
-        double tot = (double)st.f_blocks * st.f_frsize;
-        double used = (double)(st.f_blocks - st.f_bfree) * st.f_frsize;
-        app->disk_total_mb = tot / (1024.0 * 1024.0);
-        app->disk_used_mb = used / (1024.0 * 1024.0);
-        app->disk_pct = (tot > 0.0) ? (100.0 * used / tot) : 0.0;
+    double used_mb = 0.0, total_mb = 0.0;
+    if (statvfs("/mnt/.overlay/lower", &st) == 0 && st.f_blocks > 0) {
+        double lb = ((double)(st.f_blocks - st.f_bfree) * st.f_frsize) / (1024.0 * 1024.0);
+        used_mb += lb;
+        total_mb += ((double)st.f_blocks * st.f_frsize) / (1024.0 * 1024.0);
+    }
+    if (statvfs("/opt/firefox", &st) == 0 && st.f_blocks > 0 && st.f_bfree == 0) {
+        double fb = ((double)st.f_blocks * st.f_frsize) / (1024.0 * 1024.0);
+        used_mb += fb;
+        total_mb += fb;
     }
     if (statvfs("/", &st) == 0 && st.f_blocks > 0) {
-        double tot = (double)st.f_blocks * st.f_frsize;
-        double used = (double)(st.f_blocks - st.f_bfree) * st.f_frsize;
-        double root_pct = (tot > 0.0) ? (100.0 * used / tot) : 0.0;
-        if (root_pct > app->disk_pct) {
-            app->disk_pct = root_pct;
-            app->disk_total_mb = tot / (1024.0 * 1024.0);
-            app->disk_used_mb = used / (1024.0 * 1024.0);
-        }
+        double ru = ((double)(st.f_blocks - st.f_bfree) * st.f_frsize) / (1024.0 * 1024.0);
+        double rt = ((double)st.f_blocks * st.f_frsize) / (1024.0 * 1024.0);
+        used_mb += ru;
+        if (total_mb <= 0.0) total_mb = rt;
+        else total_mb += rt;
     }
+    if (statvfs("/var/lib/data", &st) == 0 && st.f_blocks > 0) {
+        used_mb += ((double)(st.f_blocks - st.f_bfree) * st.f_frsize) / (1024.0 * 1024.0);
+        total_mb += ((double)st.f_blocks * st.f_frsize) / (1024.0 * 1024.0);
+    }
+    app->disk_used_mb = used_mb;
+    app->disk_total_mb = total_mb;
+    app->disk_pct = (total_mb > 0.0) ? (100.0 * used_mb / total_mb) : 0.0;
 }
 
 static void sample_net(PanelApp *app) {
@@ -571,24 +581,25 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     double rx = w - 10.0;
 
     /* Power / Clock Pill */
-    double clk_w = 78.0;
+    double clk_w = 104.0;
     rx -= clk_w;
     app->r_power = (Rect){ rx, 3, clk_w, 21 };
     draw_hover_pill(cr, app, app->r_power);
-    draw_text(cr, rx + 6, 17.5, app->clock_str, 0.804, 0.839, 0.957, 1, 11.0);
-    /* Power glyph */
+    draw_text(cr, rx + 8, 17.5, app->clock_str, 0.804, 0.839, 0.957, 1, 11.0);
+    /* Power glyph (with clear margin from clock digits) */
+    double px = rx + clk_w - 13.0;
     cairo_set_source_rgb(cr, 0.953, 0.545, 0.659);
     cairo_set_line_width(cr, 1.4);
-    cairo_arc(cr, rx + clk_w - 11, 14, 4.5, -1.0, 4.14);
+    cairo_arc(cr, px, 14.0, 4.5, -1.0, 4.14);
     cairo_stroke(cr);
-    cairo_move_to(cr, rx + clk_w - 11, 8.5);
-    cairo_line_to(cr, rx + clk_w - 11, 13.5);
+    cairo_move_to(cr, px, 8.5);
+    cairo_line_to(cr, px, 13.5);
     cairo_stroke(cr);
 
     /* Audio Widget */
     if (app->has_audio) {
-        rx -= 56.0;
-        app->r_vol = (Rect){ rx, 3, 52, 21 };
+        rx -= 58.0;
+        app->r_vol = (Rect){ rx, 3, 54, 21 };
         draw_hover_pill(cr, app, app->r_vol);
         draw_speaker_icon(cr, rx + 4, 6, app->vol_muted);
         char vtxt[16];
@@ -599,7 +610,7 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     }
 
     /* Network Widget */
-    double net_w = 108.0;
+    double net_w = 112.0;
     rx -= (net_w + 6.0);
     app->r_net = (Rect){ rx, 3, net_w, 21 };
     draw_hover_pill(cr, app, app->r_net);
@@ -611,34 +622,37 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     }
     draw_sparkline(cr, rx + 22, 5, 36, 17, app->rx_hist, app->tx_hist, net_peak);
     char ntxt[24];
-    if (app->rx_kbps >= 1024.0) snprintf(ntxt, sizeof(ntxt), "%.1fM", app->rx_kbps / 1024.0);
-    else snprintf(ntxt, sizeof(ntxt), "%.0fK", app->rx_kbps);
+    double net_tot = app->rx_kbps + app->tx_kbps;
+    if (net_tot >= 1024.0) snprintf(ntxt, sizeof(ntxt), "%.1fM", net_tot / 1024.0);
+    else if (net_tot >= 1.0) snprintf(ntxt, sizeof(ntxt), "%.0fK", net_tot);
+    else snprintf(ntxt, sizeof(ntxt), "%.0fB", net_tot * 1024.0);
     draw_text(cr, rx + 62, 17.5, ntxt, 0.580, 0.886, 0.835, 0, 10.0);
 
-    /* Disk / RAMDisk Widget */
-    double dsk_w = 62.0;
+    /* Disk / Storage Widget */
+    double dsk_w = 78.0;
     rx -= (dsk_w + 6.0);
     app->r_disk = (Rect){ rx, 3, dsk_w, 21 };
     draw_hover_pill(cr, app, app->r_disk);
     draw_disk_icon(cr, rx + 4, 6);
     draw_vertical_gauge(cr, rx + 22, 5.5, app->disk_pct);
-    char dtxt[16];
-    snprintf(dtxt, sizeof(dtxt), "%.0f%%", app->disk_pct);
+    char dtxt[24];
+    if (app->disk_used_mb >= 1024.0) snprintf(dtxt, sizeof(dtxt), "%.1fG", app->disk_used_mb / 1024.0);
+    else snprintf(dtxt, sizeof(dtxt), "%.0fM", app->disk_used_mb);
     draw_text(cr, rx + 32, 17.5, dtxt, 0.729, 0.761, 0.871, 0, 10.5);
 
     /* RAM Widget */
-    double ram_w = 82.0;
+    double ram_w = 108.0;
     rx -= (ram_w + 6.0);
     app->r_ram = (Rect){ rx, 3, ram_w, 21 };
     draw_hover_pill(cr, app, app->r_ram);
     draw_ram_icon(cr, rx + 4, 6);
     draw_vertical_gauge(cr, rx + 22, 5.5, app->ram_pct);
-    char rtxt[24];
-    snprintf(rtxt, sizeof(rtxt), "%.0fM", app->ram_used_mb);
-    draw_text(cr, rx + 32, 17.5, rtxt, 0.651, 0.890, 0.631, 1, 10.5);
+    char rtxt[32];
+    snprintf(rtxt, sizeof(rtxt), "%.0fM/%.1fG", app->ram_used_mb, app->ram_total_mb / 1024.0);
+    draw_text(cr, rx + 32, 17.5, rtxt, 0.651, 0.890, 0.631, 1, 10.0);
 
     /* CPU Widget */
-    double cpu_w = 148.0;
+    double cpu_w = 158.0;
     rx -= (cpu_w + 6.0);
     app->r_cpu = (Rect){ rx, 3, cpu_w, 21 };
     draw_hover_pill(cr, app, app->r_cpu);
@@ -646,10 +660,10 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     draw_sparkline(cr, rx + 22, 5, 42, 17, app->cpu_total_hist, app->cpu_sys_hist, 100.0);
     char ctxt[32];
     if (app->cpu_ghz > 0.05)
-        snprintf(ctxt, sizeof(ctxt), "%.0f%% %.2fGHz", app->cpu_pct, app->cpu_ghz);
+        snprintf(ctxt, sizeof(ctxt), "%.1f%% %.2fGHz", app->cpu_pct, app->cpu_ghz);
     else
-        snprintf(ctxt, sizeof(ctxt), "%.0f%% CPU", app->cpu_pct);
-    draw_text(cr, rx + 68, 17.5, ctxt, 0.804, 0.839, 0.957, 1, 10.5);
+        snprintf(ctxt, sizeof(ctxt), "%.1f%% CPU", app->cpu_pct);
+    draw_text(cr, rx + 68, 17.5, ctxt, 0.804, 0.839, 0.957, 1, 10.0);
 
     cairo_destroy(cr);
     return TRUE;
@@ -748,10 +762,10 @@ static gboolean on_tick(gpointer data) {
     return TRUE;
 }
 
-static void on_realize(GtkWidget *widget, gpointer data) {
-    PanelApp *app = (PanelApp *)data;
+static void apply_dock_struts(PanelApp *app) {
+    if (!app->window || !app->window->window) return;
     Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
-    Window xwin = GDK_WINDOW_XID(widget->window);
+    Window xwin = GDK_WINDOW_XID(app->window->window);
 
     Atom a_type = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
     Atom a_dock = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
@@ -764,8 +778,26 @@ static void on_realize(GtkWidget *widget, gpointer data) {
     long strut_p[12] = { 0, 0, PANEL_HEIGHT, 0, 0, 0, 0, 0, 0, app->width - 1, 0, 0 };
     Atom a_strut_p = XInternAtom(dpy, "_NET_WM_STRUT_PARTIAL", False);
     XChangeProperty(dpy, xwin, a_strut_p, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)strut_p, 12);
+}
 
+static void on_realize(GtkWidget *widget, gpointer data) {
+    (void)widget;
+    PanelApp *app = (PanelApp *)data;
+    apply_dock_struts(app);
     gtk_window_stick(GTK_WINDOW(app->window));
+}
+
+static void on_screen_resized(GdkScreen *scr, gpointer data) {
+    PanelApp *app = (PanelApp *)data;
+    int nw = gdk_screen_get_width(scr);
+    if (nw >= 800 && nw != app->width) {
+        app->width = nw;
+        gtk_widget_set_size_request(app->window, app->width, PANEL_HEIGHT);
+        gtk_window_resize(GTK_WINDOW(app->window), app->width, PANEL_HEIGHT);
+        gtk_window_move(GTK_WINDOW(app->window), 0, 0);
+        apply_dock_struts(app);
+        gtk_widget_queue_draw(app->area);
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -789,6 +821,7 @@ int main(int argc, char *argv[]) {
     gtk_widget_set_size_request(app.window, app.width, PANEL_HEIGHT);
     gtk_window_move(GTK_WINDOW(app.window), 0, 0);
     g_signal_connect(app.window, "realize", G_CALLBACK(on_realize), &app);
+    g_signal_connect(scr, "size-changed", G_CALLBACK(on_screen_resized), &app);
 
     app.area = gtk_drawing_area_new();
     gtk_widget_add_events(app.area,
