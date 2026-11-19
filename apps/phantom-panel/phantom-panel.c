@@ -233,7 +233,8 @@ static void sample_mem_disk(PanelApp *app) {
         }
         fclose(fp);
         if (!has_avail) avail = fre + buf + cac + sre;
-        unsigned long used = (tot > avail) ? (tot - avail) : 0;
+        unsigned long reclaim = fre + buf + cac + sre;
+        unsigned long used = (tot > reclaim) ? (tot - reclaim) : 0;
         app->ram_total_mb = (double)tot / 1024.0;
         app->ram_used_mb = (double)used / 1024.0;
         app->ram_avail_mb = (double)avail / 1024.0;

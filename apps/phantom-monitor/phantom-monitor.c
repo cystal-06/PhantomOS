@@ -209,14 +209,12 @@ static void read_mem_and_disks(AppState *st) {
     if (fp) {
         char key[64];
         unsigned long long val = 0;
-        unsigned long long total = 0, avail = 0, mfree = 0, buffers = 0, cached = 0, srecl = 0;
+        unsigned long long total = 0, mfree = 0, buffers = 0, cached = 0, srecl = 0;
         unsigned long long swap_tot = 0, swap_free = 0;
-        int has_avail = 0;
         char line[256];
         while (fgets(line, sizeof(line), fp)) {
             if (sscanf(line, "%63[^:]: %llu", key, &val) == 2) {
                 if (strcmp(key, "MemTotal") == 0) total = val;
-                else if (strcmp(key, "MemAvailable") == 0) { avail = val; has_avail = 1; }
                 else if (strcmp(key, "MemFree") == 0) mfree = val;
                 else if (strcmp(key, "Buffers") == 0) buffers = val;
                 else if (strcmp(key, "Cached") == 0) cached = val;
@@ -227,8 +225,8 @@ static void read_mem_and_disks(AppState *st) {
         }
         fclose(fp);
 
-        if (!has_avail) avail = mfree + buffers + cached + srecl;
-        unsigned long long used = (total > avail) ? (total - avail) : 0;
+        unsigned long long reclaim = mfree + buffers + cached + srecl;
+        unsigned long long used = (total > reclaim) ? (total - reclaim) : 0;
         st->mem_total_mb = (double)total / 1024.0;
         st->mem_used_mb = (double)used / 1024.0;
         st->mem_cache_mb = (double)(buffers + cached + srecl) / 1024.0;
