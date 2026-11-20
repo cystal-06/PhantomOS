@@ -1,9 +1,14 @@
 #define _POSIX_C_SOURCE 200809L
+#include <arpa/inet.h>
 #include <cairo.h>
 #include <ctype.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <gdk/gdk.h>
 #include <gdk/gdkx.h>
 #include <gtk/gtk.h>
+#include <ifaddrs.h>
+#include <linux/rfkill.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,9 +18,19 @@
 #include <unistd.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/extensions/Xrandr.h>
 
 #define PANEL_HEIGHT 28
 #define HIST_LEN     28
+#define MAX_WIFI_NETS 16
+
+typedef struct {
+    char ssid[64];
+    int signal_dbm;
+    int signal_pct;
+    int secured;
+    int connected;
+} WifiNet;
 
 typedef struct {
     double x, y, w, h;
@@ -79,6 +94,75 @@ typedef struct {
     int vol_muted;
     int has_audio;
 
+    /* Battery / Power */
+    int has_bat;
+    int bat_pct;
+    int bat_charging;
+    int ac_online;
+    char bat_status[32];
+
+    /* Backlight / Display */
+    int has_hw_bl;
+    char bl_dir[128];
+    int bl_max;
+    int bright_pct;
+    int bright_init;
+    int night_light;
+
+    /* Wi-Fi, LAN & RFKILL */
+    int has_wifi;
+    char wifi_iface[32];
+    int wifi_up;
+    int wifi_connected;
+    int wifi_signal_pct;
+    char wifi_ssid[64];
+    char eth_ip[32];
+    int has_rfkill;
+    int airplane_mode;
+    WifiNet wifi_nets[MAX_WIFI_NETS];
+    int wifi_net_count;
+    int wifi_scanning;
+
+    /* Quick Settings Popup */
+    GtkWidget *qs_popup;
+    GtkWidget *qs_vbox;
+    GtkWidget *qs_area;
+    GtkWidget *qs_pass_box;
+    GtkWidget *qs_pass_label;
+    GtkWidget *qs_pass_entry;
+    int qs_page; /* 0 = main, 1 = wifi list, 2 = wifi password */
+    int qs_power_confirm;
+    char qs_target_ssid[64];
+    char qs_toast[96];
+    gint64 qs_toast_until_us;
+    int dragging_slider; /* 0 = none, 1 = vol, 2 = bright */
+    double qs_hx;
+    double qs_hy;
+    int qs_hover;
+    gint64 qs_hidden_us;
+    gint64 last_slider_cmd_us;
+
+    Rect r_qs_bat_pill;
+    Rect r_qs_shot;
+    Rect r_qs_mon;
+    Rect r_qs_lock;
+    Rect r_qs_pwr;
+    Rect r_qs_logout;
+    Rect r_qs_reboot;
+    Rect r_qs_poweroff;
+    Rect r_qs_pwr_cancel;
+    Rect r_qs_vol_ico;
+    Rect r_qs_vol_trk;
+    Rect r_qs_bright_trk;
+    Rect r_qs_wifi_toggle;
+    Rect r_qs_wifi_arrow;
+    Rect r_qs_lan;
+    Rect r_qs_night;
+    Rect r_qs_plane;
+    Rect r_qs_back;
+    Rect r_qs_scan;
+    Rect r_qs_wifi_rows[6];
+
     /* Workspace */
     long cur_ws;
     long num_ws;
@@ -98,8 +182,10 @@ typedef struct {
     Rect r_ram;
     Rect r_disk;
     Rect r_net;
-    Rect r_vol;
-    Rect r_power;
+    Rect r_clk;
+    Rect r_qs;
+    Rect r_qs_bar_vol;
+    Rect r_qs_bar_bright;
 } PanelApp;
 
 static void push_hist(double *arr, double v) {
@@ -363,11 +449,420 @@ static void sample_audio(PanelApp *app) {
     pclose(fp);
 }
 
+static int read_sys_str(const char *path, char *buf, size_t n) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+    int ok = (fgets(buf, (int)n, fp) != NULL);
+    fclose(fp);
+    if (ok) {
+        size_t len = strlen(buf);
+        while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' ')) {
+            buf[--len] = '\0';
+        }
+    }
+    return ok;
+}
+
+static int read_sys_int(const char *path, int *out) {
+    char buf[64];
+    if (!read_sys_str(path, buf, sizeof(buf))) return 0;
+    *out = atoi(buf);
+    return 1;
+}
+
+static void sample_battery(PanelApp *app) {
+    app->has_bat = 0;
+    app->bat_charging = 0;
+    app->ac_online = 0;
+    app->bat_status[0] = '\0';
+
+    DIR *dir = opendir("/sys/class/power_supply");
+    if (!dir) return;
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        char p_type[384], p_val[384], typ[64];
+        snprintf(p_type, sizeof(p_type), "/sys/class/power_supply/%s/type", de->d_name);
+        if (!read_sys_str(p_type, typ, sizeof(typ))) continue;
+        if (strcmp(typ, "Battery") == 0 && !app->has_bat) {
+            int cap = 0;
+            snprintf(p_val, sizeof(p_val), "/sys/class/power_supply/%s/capacity", de->d_name);
+            if (read_sys_int(p_val, &cap)) {
+                app->has_bat = 1;
+                if (cap < 0) cap = 0;
+                if (cap > 100) cap = 100;
+                app->bat_pct = cap;
+                snprintf(p_val, sizeof(p_val), "/sys/class/power_supply/%s/status", de->d_name);
+                if (read_sys_str(p_val, app->bat_status, sizeof(app->bat_status))) {
+                    if (strcmp(app->bat_status, "Charging") == 0 ||
+                        strcmp(app->bat_status, "Full") == 0) {
+                        app->bat_charging = 1;
+                    }
+                }
+            }
+        } else if (strcmp(typ, "Mains") == 0) {
+            int online = 0;
+            snprintf(p_val, sizeof(p_val), "/sys/class/power_supply/%s/online", de->d_name);
+            if (read_sys_int(p_val, &online) && online > 0) {
+                app->ac_online = 1;
+            }
+        }
+    }
+    closedir(dir);
+    if (app->has_bat && app->ac_online && strcmp(app->bat_status, "Not charging") == 0) {
+        app->bat_charging = 1;
+    }
+}
+
+static void sample_backlight(PanelApp *app) {
+    if (!app->bright_init) {
+        app->bright_pct = 100;
+        app->bright_init = 1;
+    }
+    DIR *dir = opendir("/sys/class/backlight");
+    if (!dir) {
+        app->has_hw_bl = 0;
+        return;
+    }
+    struct dirent *de;
+    app->has_hw_bl = 0;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        char p_cur[384], p_max[384];
+        int cur = 0, mx = 0;
+        snprintf(p_max, sizeof(p_max), "/sys/class/backlight/%s/max_brightness", de->d_name);
+        snprintf(p_cur, sizeof(p_cur), "/sys/class/backlight/%s/brightness", de->d_name);
+        if (read_sys_int(p_max, &mx) && mx > 0 && read_sys_int(p_cur, &cur)) {
+            app->has_hw_bl = 1;
+            g_strlcpy(app->bl_dir, de->d_name, sizeof(app->bl_dir));
+            app->bl_max = mx;
+            if (!app->dragging_slider) {
+                int pct = (int)((100.0 * (double)cur / (double)mx) + 0.5);
+                if (pct < 10) pct = 10;
+                if (pct > 100) pct = 100;
+                app->bright_pct = pct;
+            }
+            break;
+        }
+    }
+    closedir(dir);
+}
+
+static void apply_display_settings(PanelApp *app) {
+    if (app->bright_pct < 15) app->bright_pct = 15;
+    if (app->bright_pct > 100) app->bright_pct = 100;
+
+    if (app->has_hw_bl && app->bl_max > 0 && app->bl_dir[0]) {
+        char p_cur[384];
+        snprintf(p_cur, sizeof(p_cur), "/sys/class/backlight/%s/brightness", app->bl_dir);
+        int val = (app->bl_max * app->bright_pct) / 100;
+        int min_v = app->bl_max / 20;
+        if (min_v < 1) min_v = 1;
+        if (val < min_v) val = min_v;
+        FILE *fp = fopen(p_cur, "w");
+        if (fp) {
+            fprintf(fp, "%d\n", val);
+            fclose(fp);
+        }
+    }
+
+    Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+    if (!dpy) return;
+    Window root = DefaultRootWindow(dpy);
+    XRRScreenResources *res = XRRGetScreenResourcesCurrent(dpy, root);
+    if (!res) return;
+
+    double lum = app->has_hw_bl ? 1.0 : (0.25 + 0.75 * ((double)app->bright_pct / 100.0));
+    double mr = lum;
+    double mg = lum * (app->night_light ? 0.84 : 1.0);
+    double mb = lum * (app->night_light ? 0.65 : 1.0);
+
+    for (int i = 0; i < res->ncrtc; i++) {
+        int sz = XRRGetCrtcGammaSize(dpy, res->crtcs[i]);
+        if (sz <= 1) continue;
+        XRRCrtcGamma *g = XRRAllocGamma(sz);
+        if (!g) continue;
+        for (int j = 0; j < sz; j++) {
+            double base = (65535.0 * (double)j) / (double)(sz - 1);
+            g->red[j]   = (unsigned short)(base * mr);
+            g->green[j] = (unsigned short)(base * mg);
+            g->blue[j]  = (unsigned short)(base * mb);
+        }
+        XRRSetCrtcGamma(dpy, res->crtcs[i], g);
+        XRRFreeGamma(g);
+    }
+    XRRFreeScreenResources(res);
+    XFlush(dpy);
+}
+
+static void sample_rfkill(PanelApp *app) {
+    DIR *dir = opendir("/sys/class/rfkill");
+    if (!dir) {
+        app->has_rfkill = 0;
+        return;
+    }
+    struct dirent *de;
+    int found = 0, blocked = 1;
+    while ((de = readdir(dir)) != NULL) {
+        if (strncmp(de->d_name, "rfkill", 6) != 0) continue;
+        char p_soft[384];
+        int soft = 0;
+        snprintf(p_soft, sizeof(p_soft), "/sys/class/rfkill/%s/soft", de->d_name);
+        if (read_sys_int(p_soft, &soft)) {
+            found = 1;
+            if (soft == 0) blocked = 0;
+        }
+    }
+    closedir(dir);
+    app->has_rfkill = found;
+    if (found) app->airplane_mode = blocked;
+}
+
+static void set_airplane_mode(PanelApp *app, int block) {
+    int fd = open("/dev/rfkill", O_WRONLY);
+    if (fd >= 0) {
+        struct rfkill_event ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = RFKILL_TYPE_ALL;
+        ev.op = RFKILL_OP_CHANGE_ALL;
+        ev.soft = block ? 1 : 0;
+        ssize_t wr = write(fd, &ev, sizeof(ev));
+        (void)wr;
+        close(fd);
+    }
+    app->airplane_mode = block ? 1 : 0;
+    if (app->has_wifi && app->wifi_iface[0]) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "sudo -n /usr/libexec/phantom-net %s %s",
+                 block ? "wifi-down" : "wifi-up", app->wifi_iface);
+        spawn_cmd(cmd);
+    }
+}
+
+static void sample_wifi_and_lan(PanelApp *app) {
+    /* Ethernet (eth0) IPv4 via getifaddrs */
+    app->eth_ip[0] = '\0';
+    struct ifaddrs *ifap = NULL;
+    if (getifaddrs(&ifap) == 0) {
+        for (struct ifaddrs *ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+            if (strcmp(ifa->ifa_name, "eth0") == 0) {
+                struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+                inet_ntop(AF_INET, &sa->sin_addr, app->eth_ip, sizeof(app->eth_ip));
+                break;
+            }
+        }
+        freeifaddrs(ifap);
+    }
+
+    /* Detect first wireless interface */
+    app->has_wifi = 0;
+    app->wifi_up = 0;
+    app->wifi_connected = 0;
+    app->wifi_signal_pct = 0;
+    app->wifi_iface[0] = '\0';
+    app->wifi_ssid[0] = '\0';
+
+    DIR *dir = opendir("/sys/class/net");
+    if (dir) {
+        struct dirent *de;
+        while ((de = readdir(dir)) != NULL) {
+            if (de->d_name[0] == '.') continue;
+            char p_w[384];
+            snprintf(p_w, sizeof(p_w), "/sys/class/net/%s/wireless", de->d_name);
+            if (access(p_w, F_OK) == 0) {
+                app->has_wifi = 1;
+                g_strlcpy(app->wifi_iface, de->d_name, sizeof(app->wifi_iface));
+                char p_flg[384], flg_s[32];
+                snprintf(p_flg, sizeof(p_flg), "/sys/class/net/%s/flags", de->d_name);
+                if (read_sys_str(p_flg, flg_s, sizeof(flg_s))) {
+                    unsigned long flags = strtoul(flg_s, NULL, 0);
+                    app->wifi_up = (flags & 1UL) ? 1 : 0; /* IFF_UP */
+                }
+                break;
+            }
+        }
+        closedir(dir);
+    }
+
+    if (!app->has_wifi || !app->wifi_iface[0]) return;
+
+    char sock[128];
+    snprintf(sock, sizeof(sock), "/var/run/wpa_supplicant/%s", app->wifi_iface);
+    if (access(sock, F_OK) == 0) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "wpa_cli -i %s status 2>/dev/null", app->wifi_iface);
+        FILE *fp = popen(cmd, "r");
+        if (fp) {
+            char line[256];
+            int completed = 0;
+            while (fgets(line, sizeof(line), fp)) {
+                size_t len = strlen(line);
+                while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+                if (strcmp(line, "wpa_state=COMPLETED") == 0) completed = 1;
+                else if (strncmp(line, "ssid=", 5) == 0) {
+                    g_strlcpy(app->wifi_ssid, line + 5, sizeof(app->wifi_ssid));
+                }
+            }
+            pclose(fp);
+            app->wifi_connected = (completed && app->wifi_ssid[0]) ? 1 : 0;
+        }
+    }
+
+    if (app->wifi_connected) {
+        FILE *wf = fopen("/proc/net/wireless", "r");
+        if (wf) {
+            char line[256];
+            while (fgets(line, sizeof(line), wf)) {
+                char *c = strchr(line, ':');
+                if (!c) continue;
+                *c = '\0';
+                char *ifn = line;
+                while (*ifn == ' ') ifn++;
+                if (strcmp(ifn, app->wifi_iface) == 0) {
+                    double link = 0.0, level = -70.0;
+                    int status = 0;
+                    if (sscanf(c + 1, "%d %lf %lf", &status, &link, &level) >= 3) {
+                        int dbm = (level > 0.0) ? (int)(level - 256.0) : (int)level;
+                        int pct = (dbm + 95) * 2;
+                        if (pct < 10) pct = 10;
+                        if (pct > 100) pct = 100;
+                        app->wifi_signal_pct = pct;
+                    }
+                    break;
+                }
+            }
+            fclose(wf);
+        }
+        if (app->wifi_signal_pct == 0) app->wifi_signal_pct = 75;
+    }
+}
+
+static void read_wifi_scan_results(PanelApp *app) {
+    app->wifi_net_count = 0;
+    if (!app->has_wifi || !app->wifi_iface[0]) return;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "wpa_cli -i %s scan_results 2>/dev/null", app->wifi_iface);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return;
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, "bssid", 5) == 0) continue;
+        char bssid[64], flags[192], ssid[128];
+        int freq = 0, sig = -80;
+        ssid[0] = '\0';
+        if (sscanf(line, "%63s %d %d %191s %127[^\n]", bssid, &freq, &sig, flags, ssid) >= 4) {
+            if (!ssid[0] || strncmp(ssid, "\\x00", 4) == 0) continue;
+            int dbm = (sig > 0) ? (sig - 256) : sig;
+            int pct = (dbm + 95) * 2;
+            if (pct < 5) pct = 5;
+            if (pct > 100) pct = 100;
+            int sec = (strstr(flags, "WPA") || strstr(flags, "WEP") || strstr(flags, "SAE")) ? 1 : 0;
+            int dup = -1;
+            for (int i = 0; i < app->wifi_net_count; i++) {
+                if (strcmp(app->wifi_nets[i].ssid, ssid) == 0) {
+                    dup = i;
+                    break;
+                }
+            }
+            if (dup >= 0) {
+                if (dbm > app->wifi_nets[dup].signal_dbm) {
+                    app->wifi_nets[dup].signal_dbm = dbm;
+                    app->wifi_nets[dup].signal_pct = pct;
+                }
+                continue;
+            }
+            if (app->wifi_net_count < MAX_WIFI_NETS) {
+                WifiNet *n = &app->wifi_nets[app->wifi_net_count++];
+                snprintf(n->ssid, sizeof(n->ssid), "%s", ssid);
+                n->signal_dbm = dbm;
+                n->signal_pct = pct;
+                n->secured = sec;
+                n->connected = (app->wifi_connected && strcmp(app->wifi_ssid, ssid) == 0) ? 1 : 0;
+            }
+        }
+    }
+    pclose(fp);
+    for (int i = 0; i < app->wifi_net_count; i++) {
+        for (int j = i + 1; j < app->wifi_net_count; j++) {
+            int score_i = app->wifi_nets[i].connected * 1000 + app->wifi_nets[i].signal_pct;
+            int score_j = app->wifi_nets[j].connected * 1000 + app->wifi_nets[j].signal_pct;
+            if (score_j > score_i) {
+                WifiNet tmp = app->wifi_nets[i];
+                app->wifi_nets[i] = app->wifi_nets[j];
+                app->wifi_nets[j] = tmp;
+            }
+        }
+    }
+}
+
+static gboolean on_wifi_scan_done(gpointer data) {
+    PanelApp *app = (PanelApp *)data;
+    app->wifi_scanning = 0;
+    read_wifi_scan_results(app);
+    if (app->qs_popup && GTK_WIDGET_VISIBLE(app->qs_popup)) {
+        gtk_widget_queue_draw(app->qs_area);
+    }
+    return FALSE;
+}
+
+static void trigger_wifi_scan(PanelApp *app) {
+    if (!app->has_wifi || !app->wifi_iface[0]) return;
+    read_wifi_scan_results(app);
+    app->wifi_scanning = 1;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "wpa_cli -i %s scan >/dev/null 2>&1", app->wifi_iface);
+    spawn_cmd(cmd);
+    g_timeout_add(1600, on_wifi_scan_done, app);
+}
+
+static gboolean on_wifi_connect_poll(gpointer data) {
+    PanelApp *app = (PanelApp *)data;
+    sample_wifi_and_lan(app);
+    gtk_widget_queue_draw(app->area);
+    if (app->qs_popup && GTK_WIDGET_VISIBLE(app->qs_popup)) {
+        gtk_widget_queue_draw(app->qs_area);
+    }
+    return FALSE;
+}
+
+static void connect_wifi_async(PanelApp *app, const char *ssid, const char *pass) {
+    if (!app->has_wifi || !app->wifi_iface[0] || !ssid[0]) return;
+    char *argv[] = {
+        "/usr/bin/sudo", "-n", "/usr/libexec/phantom-net",
+        "wifi-connect", app->wifi_iface, (char *)ssid, NULL
+    };
+    gint in_fd = -1;
+    GError *err = NULL;
+    if (g_spawn_async_with_pipes(NULL, argv, NULL, G_SPAWN_DEFAULT, NULL, NULL,
+                                 NULL, &in_fd, NULL, NULL, &err)) {
+        if (in_fd >= 0) {
+            if (pass && pass[0]) {
+                ssize_t w1 = write(in_fd, pass, strlen(pass));
+                (void)w1;
+            }
+            ssize_t w2 = write(in_fd, "\n", 1);
+            (void)w2;
+            close(in_fd);
+        }
+        snprintf(app->qs_toast, sizeof(app->qs_toast), "Connecting to %s...", ssid);
+        app->qs_toast_until_us = g_get_monotonic_time() + 5000000;
+        g_timeout_add(2500, on_wifi_connect_poll, app);
+        g_timeout_add(5500, on_wifi_connect_poll, app);
+    } else if (err) {
+        g_error_free(err);
+    }
+}
+
 static void sample_all(PanelApp *app) {
     sample_cpu(app);
     sample_mem_disk(app);
     sample_net(app);
     sample_audio(app);
+    sample_battery(app);
+    sample_backlight(app);
+    sample_rfkill(app);
+    sample_wifi_and_lan(app);
 
     Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
     if (dpy) {
@@ -485,6 +980,156 @@ static void draw_speaker_icon(cairo_t *cr, double x, double y, int muted) {
     }
 }
 
+static void draw_wifi_icon(cairo_t *cr, double x, double y, int active, int connected, int pct, int white) {
+    double cx = x + 8.0, cy = y + 12.5;
+    if (white) cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+    else if (active && connected) cairo_set_source_rgb(cr, 0.804, 0.839, 0.957);
+    else if (active) cairo_set_source_rgb(cr, 0.651, 0.690, 0.800);
+    else cairo_set_source_rgb(cr, 0.451, 0.478, 0.580);
+
+    cairo_arc(cr, cx, cy, 1.4, 0, 2.0 * G_PI);
+    cairo_fill(cr);
+
+    cairo_set_line_width(cr, 1.4);
+    int bars = (active && connected) ? ((pct > 70) ? 3 : (pct > 40 ? 2 : 1)) : (active ? 3 : 0);
+    double radii[3] = { 4.0, 6.8, 9.6 };
+    for (int i = 0; i < 3; i++) {
+        if (!active) cairo_set_source_rgba(cr, 0.451, 0.478, 0.580, 0.45);
+        else if (i < bars) {
+            if (white) cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+            else cairo_set_source_rgb(cr, 0.804, 0.839, 0.957);
+        } else {
+            cairo_set_source_rgba(cr, 0.651, 0.690, 0.800, 0.35);
+        }
+        cairo_arc(cr, cx, cy, radii[i], -2.35, -0.79);
+        cairo_stroke(cr);
+    }
+    if (!active) {
+        cairo_set_source_rgb(cr, 0.953, 0.545, 0.659);
+        cairo_move_to(cr, x + 2.5, y + 3.0);
+        cairo_line_to(cr, x + 13.5, y + 13.5);
+        cairo_stroke(cr);
+    }
+}
+
+static void draw_sun_icon(cairo_t *cr, double x, double y, int warm) {
+    double cx = x + 8.0, cy = y + 8.0;
+    if (warm) cairo_set_source_rgb(cr, 0.976, 0.886, 0.686);
+    else cairo_set_source_rgb(cr, 0.804, 0.839, 0.957);
+    cairo_set_line_width(cr, 1.3);
+    cairo_arc(cr, cx, cy, 3.0, 0, 2.0 * G_PI);
+    cairo_stroke(cr);
+    for (int i = 0; i < 8; i++) {
+        double a = i * (G_PI / 4.0);
+        cairo_move_to(cr, cx + cos(a) * 4.7, cy + sin(a) * 4.7);
+        cairo_line_to(cr, cx + cos(a) * 6.5, cy + sin(a) * 6.5);
+    }
+    cairo_stroke(cr);
+}
+
+static void draw_battery_icon(cairo_t *cr, double x, double y, int has_bat, int pct, int charging) {
+    if (!has_bat) {
+        /* Compact AC Plug / Laptop Power glyph */
+        cairo_set_source_rgb(cr, 0.651, 0.890, 0.631);
+        cairo_set_line_width(cr, 1.3);
+        rounded_rect(cr, x + 3.5, y + 5.0, 9.0, 6.0, 2.0);
+        cairo_stroke(cr);
+        cairo_move_to(cr, x + 6.0, y + 2.5); cairo_line_to(cr, x + 6.0, y + 5.0);
+        cairo_move_to(cr, x + 10.0, y + 2.5); cairo_line_to(cr, x + 10.0, y + 5.0);
+        cairo_move_to(cr, x + 8.0, y + 11.0); cairo_line_to(cr, x + 8.0, y + 14.0);
+        cairo_stroke(cr);
+        return;
+    }
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    cairo_set_source_rgb(cr, 0.804, 0.839, 0.957);
+    cairo_set_line_width(cr, 1.2);
+    rounded_rect(cr, x + 2.0, y + 4.0, 11.0, 8.0, 1.6);
+    cairo_stroke(cr);
+    cairo_rectangle(cr, x + 13.0, y + 6.2, 1.8, 3.6);
+    cairo_fill(cr);
+
+    double fw = 8.4 * ((double)pct / 100.0);
+    if (fw < 1.5 && pct > 0) fw = 1.5;
+    if (charging) cairo_set_source_rgb(cr, 0.651, 0.890, 0.631);
+    else if (pct <= 20) cairo_set_source_rgb(cr, 0.953, 0.545, 0.659);
+    else cairo_set_source_rgb(cr, 0.651, 0.890, 0.631);
+    cairo_rectangle(cr, x + 3.3, y + 5.3, fw, 5.4);
+    cairo_fill(cr);
+}
+
+static void draw_power_glyph(cairo_t *cr, double cx, double cy, double r,
+                             double red, double grn, double blu) {
+    cairo_set_source_rgb(cr, red, grn, blu);
+    cairo_set_line_width(cr, 1.5);
+    cairo_arc(cr, cx, cy, r, -1.0, 4.14);
+    cairo_stroke(cr);
+    cairo_move_to(cr, cx, cy - r - 1.5);
+    cairo_line_to(cr, cx, cy - 0.5);
+    cairo_stroke(cr);
+}
+
+static void draw_camera_glyph(cairo_t *cr, double cx, double cy) {
+    cairo_set_source_rgb(cr, 0.804, 0.839, 0.957);
+    cairo_set_line_width(cr, 1.4);
+    /* Viewfinder frame + dot */
+    cairo_move_to(cr, cx - 5.5, cy - 2.0); cairo_line_to(cr, cx - 5.5, cy - 5.0); cairo_line_to(cr, cx - 2.5, cy - 5.0);
+    cairo_move_to(cr, cx + 2.5, cy - 5.0); cairo_line_to(cr, cx + 5.5, cy - 5.0); cairo_line_to(cr, cx + 5.5, cy - 2.0);
+    cairo_move_to(cr, cx - 5.5, cy + 2.0); cairo_line_to(cr, cx - 5.5, cy + 5.0); cairo_line_to(cr, cx - 2.5, cy + 5.0);
+    cairo_move_to(cr, cx + 2.5, cy + 5.0); cairo_line_to(cr, cx + 5.5, cy + 5.0); cairo_line_to(cr, cx + 5.5, cy + 2.0);
+    cairo_stroke(cr);
+    cairo_arc(cr, cx, cy, 2.2, 0, 2.0 * G_PI);
+    cairo_fill(cr);
+}
+
+static void draw_gear_glyph(cairo_t *cr, double cx, double cy) {
+    cairo_set_source_rgb(cr, 0.804, 0.839, 0.957);
+    cairo_set_line_width(cr, 1.5);
+    cairo_arc(cr, cx, cy, 3.2, 0, 2.0 * G_PI);
+    cairo_stroke(cr);
+    for (int i = 0; i < 6; i++) {
+        double a = i * (G_PI / 3.0);
+        cairo_move_to(cr, cx + cos(a) * 3.8, cy + sin(a) * 3.8);
+        cairo_line_to(cr, cx + cos(a) * 6.0, cy + sin(a) * 6.0);
+    }
+    cairo_stroke(cr);
+}
+
+static void draw_lock_glyph(cairo_t *cr, double cx, double cy) {
+    cairo_set_source_rgb(cr, 0.804, 0.839, 0.957);
+    cairo_set_line_width(cr, 1.4);
+    rounded_rect(cr, cx - 4.5, cy - 0.5, 9.0, 6.5, 1.5);
+    cairo_stroke(cr);
+    cairo_arc(cr, cx, cy - 1.0, 2.8, G_PI, 2.0 * G_PI);
+    cairo_stroke(cr);
+}
+
+static void draw_plane_glyph(cairo_t *cr, double cx, double cy, int white) {
+    if (white) cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+    else cairo_set_source_rgb(cr, 0.804, 0.839, 0.957);
+    cairo_set_line_width(cr, 1.4);
+    cairo_move_to(cr, cx - 5.5, cy);
+    cairo_line_to(cr, cx + 5.5, cy);
+    cairo_move_to(cr, cx - 1.0, cy - 5.5);
+    cairo_line_to(cr, cx + 2.0, cy);
+    cairo_line_to(cr, cx - 1.0, cy + 5.5);
+    cairo_move_to(cr, cx - 4.8, cy - 2.5);
+    cairo_line_to(cr, cx - 3.3, cy);
+    cairo_line_to(cr, cx - 4.8, cy + 2.5);
+    cairo_stroke(cr);
+}
+
+static void draw_night_glyph(cairo_t *cr, double cx, double cy, int white) {
+    if (white) cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+    else cairo_set_source_rgb(cr, 0.804, 0.839, 0.957);
+    cairo_set_line_width(cr, 1.4);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy, 5.2, 0.45 * G_PI, 1.55 * G_PI);
+    cairo_arc_negative(cr, cx + 2.6, cy - 0.6, 4.0, 1.38 * G_PI, 0.62 * G_PI);
+    cairo_close_path(cr);
+    cairo_stroke(cr);
+}
+
 static void draw_vertical_gauge_col(cairo_t *cr, double x, double y, double pct,
                                     double r, double g, double b) {
     if (pct < 0.0) pct = 0.0;
@@ -596,6 +1241,7 @@ static void draw_text(cairo_t *cr, double x, double y, const char *txt,
     cairo_set_source_rgb(cr, r, g, b);
     cairo_move_to(cr, x, y);
     cairo_show_text(cr, txt);
+    cairo_new_path(cr);
 }
 
 static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
@@ -661,37 +1307,65 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     cairo_line_to(cr, lx + 13, 6); cairo_line_to(cr, lx + 14, 8);
     cairo_stroke(cr);
 
-    /* RIGHT SIDE: Astra-Monitor-style Telemetry HUD */
+    /* RIGHT SIDE: Astra-Monitor-style Telemetry HUD + Top-Right Quick Settings Pill */
     double rx = w - 10.0;
 
-    /* Power / Clock Pill */
-    double clk_w = 104.0;
-    rx -= clk_w;
-    app->r_power = (Rect){ rx, 3, clk_w, 21 };
-    draw_hover_pill(cr, app, app->r_power);
-    draw_text(cr, rx + 8, 17.5, app->clock_str, 0.804, 0.839, 0.957, 1, 11.0);
-    /* Power glyph (with clear margin from clock digits) */
-    double px = rx + clk_w - 13.0;
-    cairo_set_source_rgb(cr, 0.953, 0.545, 0.659);
-    cairo_set_line_width(cr, 1.4);
-    cairo_arc(cr, px, 14.0, 4.5, -1.0, 4.14);
-    cairo_stroke(cr);
-    cairo_move_to(cr, px, 8.5);
-    cairo_line_to(cr, px, 13.5);
+    /* Top-Right Unified Quick Settings Pill (Wi-Fi | Brightness | Volume | Battery) */
+    char btxt[16] = "";
+    double btxt_w = 0.0;
+    if (app->has_bat) {
+        snprintf(btxt, sizeof(btxt), "%d%%", app->bat_pct);
+        cairo_text_extents_t be;
+        cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+        cairo_set_font_size(cr, 9.5);
+        cairo_text_extents(cr, btxt, &be);
+        btxt_w = be.width + 4.0;
+    }
+    double qs_w = (app->has_audio ? 82.0 : 62.0) + btxt_w;
+    rx -= qs_w;
+    app->r_qs = (Rect){ rx, 3, qs_w, 21 };
+
+    int qs_hov = (app->hovering && pt_in_rect(app->hover_x, app->hover_y, app->r_qs)) ||
+                 (app->qs_popup && GTK_WIDGET_VISIBLE(app->qs_popup));
+    rounded_rect(cr, rx, 3, qs_w, 21, 10.5);
+    cairo_set_source_rgb(cr, qs_hov ? 0.192 : 0.137, qs_hov ? 0.200 : 0.141, qs_hov ? 0.282 : 0.208);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.247, 0.259, 0.349);
+    cairo_set_line_width(cr, 1.0);
     cairo_stroke(cr);
 
-    /* Audio Widget */
+    double qx = rx + 6.0;
+    draw_wifi_icon(cr, qx, 5.5,
+                   !app->airplane_mode && app->has_wifi && app->wifi_up,
+                   app->wifi_connected, app->wifi_signal_pct, 0);
+    qx += 20.0;
+
+    app->r_qs_bar_bright = (Rect){ qx - 1, 3, 18, 21 };
+    draw_sun_icon(cr, qx, 5.5, app->night_light);
+    qx += 19.0;
+
     if (app->has_audio) {
-        rx -= 58.0;
-        app->r_vol = (Rect){ rx, 3, 54, 21 };
-        draw_hover_pill(cr, app, app->r_vol);
-        draw_speaker_icon(cr, rx + 4, 6, app->vol_muted);
-        char vtxt[16];
-        snprintf(vtxt, sizeof(vtxt), "%d%%", app->vol_pct);
-        draw_text(cr, rx + 22, 17.5, vtxt, 0.729, 0.761, 0.871, 0, 10.0);
+        app->r_qs_bar_vol = (Rect){ qx - 1, 3, 18, 21 };
+        draw_speaker_icon(cr, qx, 5.5, app->vol_muted);
+        qx += 19.0;
     } else {
-        app->r_vol = (Rect){ 0, 0, 0, 0 };
+        app->r_qs_bar_vol = (Rect){ 0, 0, 0, 0 };
     }
+
+    draw_battery_icon(cr, qx, 5.5, app->has_bat, app->bat_pct, app->bat_charging);
+    if (app->has_bat) {
+        draw_text(cr, qx + 17.0, 17.2, btxt,
+                  app->bat_charging ? 0.651 : 0.804,
+                  app->bat_charging ? 0.890 : 0.839,
+                  app->bat_charging ? 0.631 : 0.957, 1, 9.5);
+    }
+
+    /* Clock Pill */
+    double clk_w = 66.0;
+    rx -= (clk_w + 6.0);
+    app->r_clk = (Rect){ rx, 3, clk_w, 21 };
+    draw_hover_pill(cr, app, app->r_clk);
+    draw_text(cr, rx + 7, 17.5, app->clock_str, 0.804, 0.839, 0.957, 1, 10.5);
 
     /* Network Widget */
     double net_w = 112.0;
@@ -786,6 +1460,7 @@ static void draw_text_right(cairo_t *cr, double rx, double y, const char *txt,
     cairo_set_source_rgb(cr, r, g, b);
     cairo_move_to(cr, rx - ext.width - ext.x_bearing, y);
     cairo_show_text(cr, txt);
+    cairo_new_path(cr);
 }
 
 static void draw_hbar(cairo_t *cr, double x, double y, double w, double h, double pct,
@@ -979,6 +1654,10 @@ static void toggle_ram_popup(PanelApp *app) {
         return;
     }
 
+    if (app->qs_popup && GTK_WIDGET_VISIBLE(app->qs_popup)) {
+        gtk_widget_hide(app->qs_popup);
+    }
+
     int px = (int)(app->r_ram.x + (app->r_ram.w - pw) * 0.5);
     if (px < 6) px = 6;
     if (px + pw > app->width - 6) px = app->width - pw - 6;
@@ -989,28 +1668,575 @@ static void toggle_ram_popup(PanelApp *app) {
     gtk_widget_queue_draw(app->ram_popup_area);
 }
 
-static void show_power_menu(PanelApp *app, GdkEventButton *ev) {
-    GtkWidget *menu = gtk_menu_new();
-    GtkWidget *m_mon = gtk_menu_item_new_with_label("System Monitor");
-    GtkWidget *m_term = gtk_menu_item_new_with_label("Open Terminal");
-    GtkWidget *m_sep = gtk_separator_menu_item_new();
-    GtkWidget *m_reb = gtk_menu_item_new_with_label("Reboot");
-    GtkWidget *m_pwr = gtk_menu_item_new_with_label("Power Off");
+static void draw_qs_circle_btn(cairo_t *cr, PanelApp *app, double cx, double cy,
+                               double r, Rect *out_r) {
+    *out_r = (Rect){ cx - r, cy - r, r * 2.0, r * 2.0 };
+    int hov = app->qs_hover && pt_in_rect(app->qs_hx, app->qs_hy, *out_r);
+    cairo_arc(cr, cx, cy, r, 0, 2.0 * G_PI);
+    cairo_set_source_rgb(cr, hov ? 0.259 : 0.180, hov ? 0.275 : 0.188, hov ? 0.365 : 0.255);
+    cairo_fill(cr);
+}
 
-    g_signal_connect_swapped(m_mon, "activate", G_CALLBACK(spawn_cmd), (gpointer)"/usr/bin/phantom-monitor");
-    g_signal_connect_swapped(m_term, "activate", G_CALLBACK(spawn_cmd),
-        (gpointer)"xterm -u8 -ls -bg \"#181825\" -fg \"#cdd6f4\" -cr \"#89b4fa\" -bd \"#313244\"");
-    g_signal_connect_swapped(m_reb, "activate", G_CALLBACK(spawn_cmd), (gpointer)"sudo /sbin/reboot");
-    g_signal_connect_swapped(m_pwr, "activate", G_CALLBACK(spawn_cmd), (gpointer)"sudo /sbin/poweroff");
+static void draw_qs_slider(cairo_t *cr, double x, double y, double w, int pct,
+                           int active, Rect *out_trk) {
+    *out_trk = (Rect){ x, y - 10.0, w, 20.0 };
+    double frac = (double)pct / 100.0;
+    if (frac < 0.0) frac = 0.0;
+    if (frac > 1.0) frac = 1.0;
 
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), m_mon);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), m_term);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), m_sep);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), m_reb);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), m_pwr);
-    gtk_widget_show_all(menu);
-    gtk_menu_popup(GTK_MENU(menu), NULL, NULL, NULL, NULL, ev->button, ev->time);
-    (void)app;
+    /* Track bg */
+    rounded_rect(cr, x, y - 2.5, w, 5.0, 2.5);
+    cairo_set_source_rgb(cr, 0.231, 0.239, 0.314);
+    cairo_fill(cr);
+
+    /* Track fill */
+    double fw = w * frac;
+    if (fw > 1.0) {
+        rounded_rect(cr, x, y - 2.5, fw, 5.0, 2.5);
+        if (active) cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
+        else cairo_set_source_rgb(cr, 0.396, 0.420, 0.518);
+        cairo_fill(cr);
+    }
+
+    /* Knob */
+    double kx = x + fw;
+    cairo_arc(cr, kx, y, 6.5, 0, 2.0 * G_PI);
+    cairo_set_source_rgb(cr, 0.945, 0.961, 0.988);
+    cairo_fill(cr);
+}
+
+static void draw_qs_tile(cairo_t *cr, PanelApp *app, Rect r, int active,
+                         const char *title, const char *sub, int split_arrow) {
+    int hov = app->qs_hover && pt_in_rect(app->qs_hx, app->qs_hy, r);
+    rounded_rect(cr, r.x, r.y, r.w, r.h, 16.0);
+    if (active) {
+        cairo_set_source_rgb(cr, hov ? 0.259 : 0.208, hov ? 0.565 : 0.518, hov ? 0.925 : 0.894);
+    } else {
+        cairo_set_source_rgb(cr, hov ? 0.220 : 0.165, hov ? 0.231 : 0.173, hov ? 0.310 : 0.239);
+    }
+    cairo_fill(cr);
+
+    if (split_arrow) {
+        cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, active ? 0.22 : 0.12);
+        cairo_set_line_width(cr, 1.0);
+        cairo_move_to(cr, r.x + r.w - 30.0, r.y + 8.0);
+        cairo_line_to(cr, r.x + r.w - 30.0, r.y + r.h - 8.0);
+        cairo_stroke(cr);
+
+        /* Chevron > */
+        double ax = r.x + r.w - 17.0, ay = r.y + r.h * 0.5;
+        cairo_set_source_rgb(cr, active ? 1.0 : 0.804, active ? 1.0 : 0.839, active ? 1.0 : 0.957);
+        cairo_set_line_width(cr, 1.5);
+        cairo_move_to(cr, ax - 2.0, ay - 4.0);
+        cairo_line_to(cr, ax + 2.5, ay);
+        cairo_line_to(cr, ax - 2.0, ay + 4.0);
+        cairo_stroke(cr);
+    }
+
+    if (active) draw_text(cr, r.x + 36.0, r.y + 20.5, title, 1.0, 1.0, 1.0, 1, 10.5);
+    else draw_text(cr, r.x + 36.0, r.y + 20.5, title, 0.851, 0.878, 0.961, 1, 10.5);
+
+    char sub_clip[20];
+    snprintf(sub_clip, sizeof(sub_clip), "%.14s", sub ? sub : "");
+    if (strlen(sub ? sub : "") > 14) {
+        sub_clip[11] = '.'; sub_clip[12] = '.'; sub_clip[13] = '.'; sub_clip[14] = '\0';
+    }
+    if (active) draw_text(cr, r.x + 36.0, r.y + 34.5, sub_clip, 0.880, 0.940, 1.0, 0, 9.0);
+    else draw_text(cr, r.x + 36.0, r.y + 34.5, sub_clip, 0.620, 0.655, 0.765, 0, 9.0);
+}
+
+static gboolean take_screenshot_cb(gpointer data) {
+    PanelApp *app = (PanelApp *)data;
+    GdkWindow *root = gdk_get_default_root_window();
+    if (!root) return FALSE;
+    int sw = gdk_screen_get_width(gdk_screen_get_default());
+    int sh = gdk_screen_get_height(gdk_screen_get_default());
+    GdkPixbuf *pb = gdk_pixbuf_get_from_drawable(NULL, root, NULL, 0, 0, 0, 0, sw, sh);
+    if (pb) {
+        time_t now = time(NULL);
+        struct tm t;
+        localtime_r(&now, &t);
+        const char *home = getenv("HOME");
+        if (!home || !home[0]) home = "/tmp";
+        char path[256], fname[64];
+        strftime(fname, sizeof(fname), "PhantomOS_%Y%m%d_%H%M%S.png", &t);
+        snprintf(path, sizeof(path), "%s/%s", home, fname);
+        if (gdk_pixbuf_save(pb, path, "png", NULL, NULL)) {
+            snprintf(app->qs_toast, sizeof(app->qs_toast), "Saved ~/%s", fname);
+            app->qs_toast_until_us = g_get_monotonic_time() + 5000000;
+        }
+        g_object_unref(pb);
+    }
+    return FALSE;
+}
+
+static gboolean on_qs_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
+    (void)event;
+    PanelApp *app = (PanelApp *)data;
+    cairo_t *cr = gdk_cairo_create(widget->window);
+    double w = (double)widget->allocation.width;
+    double h = (double)widget->allocation.height;
+
+    rounded_rect(cr, 0.5, 0.5, w - 1.0, h - 1.0, 14.0);
+    cairo_set_source_rgb(cr, 0.110, 0.114, 0.165);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.235, 0.247, 0.341);
+    cairo_set_line_width(cr, 1.0);
+    cairo_stroke(cr);
+
+    if (app->qs_page == 0) {
+        /* Header row: Battery pill + 4 quick icon buttons */
+        app->r_qs_bat_pill = (Rect){ 14, 14, 88, 30 };
+        rounded_rect(cr, 14, 14, 88, 30, 15.0);
+        cairo_set_source_rgb(cr, 0.180, 0.188, 0.255);
+        cairo_fill(cr);
+        draw_battery_icon(cr, 23, 21, app->has_bat, app->bat_pct, app->bat_charging);
+        char bstr[24];
+        if (app->has_bat) snprintf(bstr, sizeof(bstr), "%d%%", app->bat_pct);
+        else snprintf(bstr, sizeof(bstr), "AC");
+        draw_text(cr, 43, 33.0, bstr, 0.851, 0.878, 0.961, 1, 11.0);
+
+        draw_qs_circle_btn(cr, app, 174, 29, 15, &app->r_qs_shot);
+        draw_camera_glyph(cr, 174, 29);
+
+        draw_qs_circle_btn(cr, app, 210, 29, 15, &app->r_qs_mon);
+        draw_gear_glyph(cr, 210, 29);
+
+        draw_qs_circle_btn(cr, app, 246, 29, 15, &app->r_qs_lock);
+        draw_lock_glyph(cr, 246, 29);
+
+        draw_qs_circle_btn(cr, app, 282, 29, 15, &app->r_qs_pwr);
+        draw_power_glyph(cr, 282, 29.5, 4.8,
+                         app->qs_power_confirm ? 0.953 : 0.804,
+                         app->qs_power_confirm ? 0.545 : 0.839,
+                         app->qs_power_confirm ? 0.659 : 0.957);
+
+        double slider_y0 = 68.0;
+        if (app->qs_power_confirm) {
+            /* Inline Power / Logout strip */
+            rounded_rect(cr, 14, 52, w - 28, 30, 10.0);
+            cairo_set_source_rgb(cr, 0.153, 0.157, 0.220);
+            cairo_fill(cr);
+            app->r_qs_logout   = (Rect){ 20, 56, 66, 22 };
+            app->r_qs_reboot   = (Rect){ 92, 56, 66, 22 };
+            app->r_qs_poweroff = (Rect){ 164, 56, 78, 22 };
+            app->r_qs_pwr_cancel = (Rect){ 248, 56, 44, 22 };
+
+            Rect *prs[4] = { &app->r_qs_logout, &app->r_qs_reboot, &app->r_qs_poweroff, &app->r_qs_pwr_cancel };
+            const char *ptxt[4] = { "Logout", "Reboot", "Power Off", "Esc" };
+            for (int i = 0; i < 4; i++) {
+                int h2 = app->qs_hover && pt_in_rect(app->qs_hx, app->qs_hy, *prs[i]);
+                rounded_rect(cr, prs[i]->x, prs[i]->y, prs[i]->w, prs[i]->h, 7.0);
+                if (i == 2) cairo_set_source_rgb(cr, h2 ? 0.92 : 0.78, h2 ? 0.38 : 0.30, h2 ? 0.46 : 0.38);
+                else cairo_set_source_rgb(cr, h2 ? 0.28 : 0.22, h2 ? 0.30 : 0.23, h2 ? 0.40 : 0.31);
+                cairo_fill(cr);
+                draw_text(cr, prs[i]->x + 10.0, prs[i]->y + 15.0, ptxt[i], 0.94, 0.96, 0.99, 1, 9.5);
+            }
+            slider_y0 = 98.0;
+        } else {
+            app->r_qs_logout = app->r_qs_reboot = app->r_qs_poweroff = app->r_qs_pwr_cancel = (Rect){0,0,0,0};
+        }
+
+        /* Volume slider */
+        app->r_qs_vol_ico = (Rect){ 14, slider_y0 - 4, 24, 24 };
+        draw_speaker_icon(cr, 17, slider_y0, app->vol_muted);
+        draw_qs_slider(cr, 46, slider_y0 + 8.0, w - 62.0,
+                       app->vol_muted ? 0 : app->vol_pct, app->has_audio && !app->vol_muted,
+                       &app->r_qs_vol_trk);
+
+        /* Brightness slider */
+        double br_y = slider_y0 + 34.0;
+        draw_sun_icon(cr, 17, br_y, app->night_light);
+        draw_qs_slider(cr, 46, br_y + 8.0, w - 62.0,
+                       app->bright_pct, 1, &app->r_qs_bright_trk);
+
+        /* 2x2 Quick Settings Tiles */
+        double ty0 = br_y + 30.0;
+        double tw = 136.0, th = 48.0, gap = 10.0;
+        Rect r_wifi_full = { 14, ty0, tw, th };
+        Rect r_lan       = { 14 + tw + gap, ty0, tw, th };
+        Rect r_night     = { 14, ty0 + th + gap, tw, th };
+        Rect r_plane     = { 14 + tw + gap, ty0 + th + gap, tw, th };
+
+        app->r_qs_wifi_toggle = (Rect){ r_wifi_full.x, r_wifi_full.y, tw - 30.0, th };
+        app->r_qs_wifi_arrow  = (Rect){ r_wifi_full.x + tw - 30.0, r_wifi_full.y, 30.0, th };
+        app->r_qs_lan         = r_lan;
+        app->r_qs_night       = r_night;
+        app->r_qs_plane       = r_plane;
+
+        int wifi_active = !app->airplane_mode && app->has_wifi && app->wifi_up;
+        const char *wsub = !app->has_wifi ? "No Adapter"
+                         : (app->airplane_mode ? "Off (Airplane)"
+                         : (app->wifi_connected ? app->wifi_ssid
+                         : (app->wifi_up ? "Disconnected" : "Off")));
+        draw_qs_tile(cr, app, r_wifi_full, wifi_active, "Wi-Fi", wsub, 1);
+        draw_wifi_icon(cr, r_wifi_full.x + 12, r_wifi_full.y + 16,
+                       wifi_active, app->wifi_connected, app->wifi_signal_pct, wifi_active);
+
+        int lan_active = (app->eth_ip[0] != '\0');
+        draw_qs_tile(cr, app, r_lan, lan_active, "Wired LAN",
+                     lan_active ? app->eth_ip : "Disconnected", 0);
+        draw_net_icon(cr, r_lan.x + 12, r_lan.y + 16);
+
+        draw_qs_tile(cr, app, r_night, app->night_light, "Night Light",
+                     app->night_light ? "Warm 4200K" : "Off", 0);
+        draw_night_glyph(cr, r_night.x + 20, r_night.y + 24, app->night_light);
+
+        draw_qs_tile(cr, app, r_plane, app->airplane_mode, "Airplane",
+                     app->airplane_mode ? "On" : "Off", 0);
+        draw_plane_glyph(cr, r_plane.x + 20, r_plane.y + 24, app->airplane_mode);
+
+        /* Status Footer */
+        double fy = h - 14.0;
+        if (app->qs_toast[0] && g_get_monotonic_time() < app->qs_toast_until_us) {
+            draw_text(cr, 16, fy, app->qs_toast, 0.651, 0.890, 0.631, 0, 9.5);
+        } else {
+            char ftxt[96];
+            snprintf(ftxt, sizeof(ftxt), "Vol %d%%  |  Bright %d%% (%.24s)",
+                     app->vol_pct, app->bright_pct, app->has_hw_bl ? app->bl_dir : "XRandR");
+            draw_text(cr, 16, fy, ftxt, 0.560, 0.595, 0.705, 0, 9.0);
+        }
+    } else if (app->qs_page == 1) {
+        /* Page 1: Inline Wi-Fi Network List */
+        app->r_qs_back = (Rect){ 14, 14, 54, 26 };
+        rounded_rect(cr, 14, 14, 54, 26, 8.0);
+        cairo_set_source_rgb(cr, 0.180, 0.188, 0.255);
+        cairo_fill(cr);
+        draw_text(cr, 24, 31, "< Back", 0.804, 0.839, 0.957, 1, 9.5);
+
+        draw_text(cr, 88, 31, "Wi-Fi Networks", 0.851, 0.878, 0.961, 1, 11.0);
+
+        app->r_qs_scan = (Rect){ w - 68, 14, 54, 26 };
+        rounded_rect(cr, w - 68, 14, 54, 26, 8.0);
+        cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
+        cairo_fill(cr);
+        draw_text(cr, w - 55, 31, app->wifi_scanning ? "..." : "Scan", 1.0, 1.0, 1.0, 1, 9.5);
+
+        if (!app->has_wifi) {
+            draw_text(cr, 24, 96, "No Wi-Fi adapter detected.", 0.953, 0.545, 0.659, 1, 10.5);
+            draw_text(cr, 24, 118, "Attach a Wi-Fi card or USB dongle on real hardware", 0.620, 0.655, 0.765, 0, 9.0);
+            draw_text(cr, 24, 134, "(Intel, Realtek rtw88/89, Atheros, MediaTek ready).", 0.620, 0.655, 0.765, 0, 9.0);
+        } else if (app->wifi_net_count == 0) {
+            draw_text(cr, 24, 96, app->wifi_scanning ? "Scanning nearby networks..." : "No networks found. Click Scan.",
+                      0.729, 0.761, 0.871, 0, 10.0);
+        } else {
+            int max_rows = app->wifi_net_count < 6 ? app->wifi_net_count : 6;
+            for (int i = 0; i < 6; i++) app->r_qs_wifi_rows[i] = (Rect){0,0,0,0};
+            for (int i = 0; i < max_rows; i++) {
+                double ry = 54.0 + i * 42.0;
+                Rect rr = { 14, ry, w - 28, 36 };
+                app->r_qs_wifi_rows[i] = rr;
+                int hov = app->qs_hover && pt_in_rect(app->qs_hx, app->qs_hy, rr);
+                rounded_rect(cr, rr.x, rr.y, rr.w, rr.h, 10.0);
+                if (app->wifi_nets[i].connected) cairo_set_source_rgb(cr, 0.165, 0.340, 0.580);
+                else cairo_set_source_rgb(cr, hov ? 0.220 : 0.165, hov ? 0.231 : 0.173, hov ? 0.310 : 0.239);
+                cairo_fill(cr);
+
+                draw_wifi_icon(cr, rr.x + 10, rr.y + 10, 1, 1, app->wifi_nets[i].signal_pct, 1);
+                draw_text(cr, rr.x + 34, rr.y + 22, app->wifi_nets[i].ssid, 0.90, 0.92, 0.98, 1, 10.5);
+                if (app->wifi_nets[i].connected) {
+                    draw_text_right(cr, rr.x + rr.w - 10, rr.y + 22, "Connected", 0.651, 0.890, 0.631, 1, 9.0);
+                } else {
+                    char sb[24];
+                    snprintf(sb, sizeof(sb), "%s %d%%",
+                             app->wifi_nets[i].secured ? "WPA" : "Open",
+                             app->wifi_nets[i].signal_pct);
+                    draw_text_right(cr, rr.x + rr.w - 10, rr.y + 22, sb, 0.620, 0.655, 0.765, 0, 9.0);
+                }
+            }
+        }
+    } else if (app->qs_page == 2) {
+        /* Page 2: Wi-Fi Password header (GtkEntry sits directly below qs_area) */
+        app->r_qs_back = (Rect){ 14, 14, 54, 26 };
+        rounded_rect(cr, 14, 14, 54, 26, 8.0);
+        cairo_set_source_rgb(cr, 0.180, 0.188, 0.255);
+        cairo_fill(cr);
+        draw_text(cr, 24, 31, "< Back", 0.804, 0.839, 0.957, 1, 9.5);
+        draw_text(cr, 80, 31, "Connect to Wi-Fi", 0.851, 0.878, 0.961, 1, 11.0);
+        draw_text(cr, 18, 68, "Network SSID:", 0.620, 0.655, 0.765, 0, 9.5);
+        draw_text(cr, 18, 88, app->qs_target_ssid, 0.537, 0.706, 0.980, 1, 11.5);
+        draw_text(cr, 18, 114, "Enter WPA/WPA2/WPA3 passphrase below:", 0.729, 0.761, 0.871, 0, 9.5);
+    }
+
+    cairo_destroy(cr);
+    return TRUE;
+}
+
+static void qs_set_page(PanelApp *app, int page) {
+    app->qs_page = page;
+    app->qs_power_confirm = 0;
+    if (app->qs_pass_box) {
+        if (page == 2) {
+            gtk_widget_set_size_request(app->qs_area, 312, 128);
+            gtk_widget_set_size_request(app->qs_popup, 312, 182);
+            gtk_window_resize(GTK_WINDOW(app->qs_popup), 312, 182);
+            gtk_widget_show_all(app->qs_pass_box);
+            gtk_entry_set_text(GTK_ENTRY(app->qs_pass_entry), "");
+            gtk_widget_grab_focus(app->qs_pass_entry);
+        } else {
+            gtk_widget_hide(app->qs_pass_box);
+            gtk_widget_set_size_request(app->qs_area, 312, 326);
+            gtk_widget_set_size_request(app->qs_popup, 312, 326);
+            gtk_window_resize(GTK_WINDOW(app->qs_popup), 312, 326);
+        }
+    }
+    if (app->qs_area) gtk_widget_queue_draw(app->qs_area);
+}
+
+static void on_wifi_pass_submit(GtkWidget *w, gpointer data) {
+    (void)w;
+    PanelApp *app = (PanelApp *)data;
+    const char *pass = gtk_entry_get_text(GTK_ENTRY(app->qs_pass_entry));
+    connect_wifi_async(app, app->qs_target_ssid, pass ? pass : "");
+    gtk_entry_set_text(GTK_ENTRY(app->qs_pass_entry), "");
+    qs_set_page(app, 0);
+}
+
+static void update_slider_at(PanelApp *app, int which, double x) {
+    Rect trk = (which == 1) ? app->r_qs_vol_trk : app->r_qs_bright_trk;
+    if (trk.w <= 1.0) return;
+    double frac = (x - trk.x) / trk.w;
+    if (frac < 0.0) frac = 0.0;
+    if (frac > 1.0) frac = 1.0;
+    int pct = (int)(frac * 100.0 + 0.5);
+    gint64 now = g_get_monotonic_time();
+
+    if (which == 1) {
+        app->vol_pct = pct;
+        app->vol_muted = 0;
+        if (app->has_audio && (now - app->last_slider_cmd_us) > 65000) {
+            char cmd[64];
+            snprintf(cmd, sizeof(cmd), "amixer -q sset Master unmute %d%%", pct);
+            spawn_cmd(cmd);
+            app->last_slider_cmd_us = now;
+        }
+    } else if (which == 2) {
+        if (pct < 15) pct = 15;
+        app->bright_pct = pct;
+        apply_display_settings(app);
+    }
+    gtk_widget_queue_draw(app->qs_area);
+    gtk_widget_queue_draw(app->area);
+}
+
+static gboolean on_qs_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data) {
+    (void)w;
+    PanelApp *app = (PanelApp *)data;
+    if (ev->button != 1) return FALSE;
+
+    if (app->qs_page == 0) {
+        if (pt_in_rect(ev->x, ev->y, app->r_qs_shot)) {
+            gtk_widget_hide(app->qs_popup);
+            g_timeout_add(220, take_screenshot_cb, app);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_mon)) {
+            gtk_widget_hide(app->qs_popup);
+            spawn_cmd("/usr/bin/phantom-monitor");
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_lock) ||
+                   pt_in_rect(ev->x, ev->y, app->r_qs_pwr)) {
+            app->qs_power_confirm = !app->qs_power_confirm;
+            gtk_widget_queue_draw(app->qs_area);
+        } else if (app->qs_power_confirm && pt_in_rect(ev->x, ev->y, app->r_qs_logout)) {
+            gtk_widget_hide(app->qs_popup);
+            spawn_cmd("killall fluxbox");
+        } else if (app->qs_power_confirm && pt_in_rect(ev->x, ev->y, app->r_qs_reboot)) {
+            gtk_widget_hide(app->qs_popup);
+            spawn_cmd("sudo -n /sbin/reboot");
+        } else if (app->qs_power_confirm && pt_in_rect(ev->x, ev->y, app->r_qs_poweroff)) {
+            gtk_widget_hide(app->qs_popup);
+            spawn_cmd("sudo -n /sbin/poweroff");
+        } else if (app->qs_power_confirm && pt_in_rect(ev->x, ev->y, app->r_qs_pwr_cancel)) {
+            app->qs_power_confirm = 0;
+            gtk_widget_queue_draw(app->qs_area);
+        } else if (app->has_audio && pt_in_rect(ev->x, ev->y, app->r_qs_vol_ico)) {
+            spawn_cmd("amixer -q sset Master toggle");
+            sample_audio(app);
+            gtk_widget_queue_draw(app->qs_area);
+            gtk_widget_queue_draw(app->area);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_vol_trk)) {
+            app->dragging_slider = 1;
+            update_slider_at(app, 1, ev->x);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_bright_trk)) {
+            app->dragging_slider = 2;
+            update_slider_at(app, 2, ev->x);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_wifi_arrow)) {
+            qs_set_page(app, 1);
+            trigger_wifi_scan(app);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_wifi_toggle)) {
+            if (!app->has_wifi) {
+                qs_set_page(app, 1);
+            } else {
+                char cmd[128];
+                snprintf(cmd, sizeof(cmd), "sudo -n /usr/libexec/phantom-net %s %s",
+                         app->wifi_up ? "wifi-down" : "wifi-up", app->wifi_iface);
+                spawn_cmd(cmd);
+                g_timeout_add(700, on_wifi_connect_poll, app);
+            }
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_lan)) {
+            spawn_cmd("sudo -n /usr/libexec/phantom-net dhcp-eth0");
+            g_timeout_add(1200, on_wifi_connect_poll, app);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_night)) {
+            app->night_light = !app->night_light;
+            apply_display_settings(app);
+            gtk_widget_queue_draw(app->qs_area);
+            gtk_widget_queue_draw(app->area);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_plane)) {
+            set_airplane_mode(app, !app->airplane_mode);
+            gtk_widget_queue_draw(app->qs_area);
+            gtk_widget_queue_draw(app->area);
+        }
+    } else if (app->qs_page == 1) {
+        if (pt_in_rect(ev->x, ev->y, app->r_qs_back)) {
+            qs_set_page(app, 0);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_qs_scan)) {
+            trigger_wifi_scan(app);
+            gtk_widget_queue_draw(app->qs_area);
+        } else {
+            for (int i = 0; i < 6 && i < app->wifi_net_count; i++) {
+                if (pt_in_rect(ev->x, ev->y, app->r_qs_wifi_rows[i])) {
+                    if (app->wifi_nets[i].connected) {
+                        char cmd[128];
+                        snprintf(cmd, sizeof(cmd), "sudo -n /usr/libexec/phantom-net wifi-disconnect %s",
+                                 app->wifi_iface);
+                        spawn_cmd(cmd);
+                        g_timeout_add(600, on_wifi_connect_poll, app);
+                        qs_set_page(app, 0);
+                    } else if (!app->wifi_nets[i].secured) {
+                        connect_wifi_async(app, app->wifi_nets[i].ssid, "");
+                        qs_set_page(app, 0);
+                    } else {
+                        snprintf(app->qs_target_ssid, sizeof(app->qs_target_ssid), "%s",
+                                 app->wifi_nets[i].ssid);
+                        qs_set_page(app, 2);
+                    }
+                    break;
+                }
+            }
+        }
+    } else if (app->qs_page == 2) {
+        if (pt_in_rect(ev->x, ev->y, app->r_qs_back)) {
+            qs_set_page(app, 1);
+        }
+    }
+    return TRUE;
+}
+
+static gboolean on_qs_button_release(GtkWidget *w, GdkEventButton *ev, gpointer data) {
+    (void)w;
+    PanelApp *app = (PanelApp *)data;
+    if (app->dragging_slider == 1 && app->has_audio) {
+        char cmd[64];
+        snprintf(cmd, sizeof(cmd), "amixer -q sset Master unmute %d%%", app->vol_pct);
+        spawn_cmd(cmd);
+    }
+    (void)ev;
+    app->dragging_slider = 0;
+    return FALSE;
+}
+
+static gboolean on_qs_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data) {
+    (void)w;
+    PanelApp *app = (PanelApp *)data;
+    app->qs_hx = ev->x;
+    app->qs_hy = ev->y;
+    app->qs_hover = 1;
+    if (app->dragging_slider) {
+        update_slider_at(app, app->dragging_slider, ev->x);
+    } else {
+        gtk_widget_queue_draw(app->qs_area);
+    }
+    return FALSE;
+}
+
+static gboolean on_qs_focus_out(GtkWidget *w, GdkEventFocus *ev, gpointer data) {
+    (void)w;
+    (void)ev;
+    PanelApp *app = (PanelApp *)data;
+    app->dragging_slider = 0;
+    app->qs_hidden_us = g_get_monotonic_time();
+    gtk_widget_hide(app->qs_popup);
+    return FALSE;
+}
+
+static gboolean on_qs_key(GtkWidget *w, GdkEventKey *ev, gpointer data) {
+    (void)w;
+    PanelApp *app = (PanelApp *)data;
+    if (ev->keyval == 0xff1b) {
+        if (app->qs_page > 0) {
+            qs_set_page(app, app->qs_page - 1);
+        } else {
+            gtk_widget_hide(app->qs_popup);
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void toggle_qs_popup(PanelApp *app) {
+    const int pw = 312;
+    const int ph = 326;
+
+    if (app->ram_popup && GTK_WIDGET_VISIBLE(app->ram_popup)) {
+        gtk_widget_hide(app->ram_popup);
+    }
+
+    if (!app->qs_popup) {
+        app->qs_popup = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_title(GTK_WINDOW(app->qs_popup), "phantom-panel-qs");
+        gtk_window_set_decorated(GTK_WINDOW(app->qs_popup), FALSE);
+        gtk_window_set_skip_taskbar_hint(GTK_WINDOW(app->qs_popup), TRUE);
+        gtk_window_set_skip_pager_hint(GTK_WINDOW(app->qs_popup), TRUE);
+        gtk_window_set_type_hint(GTK_WINDOW(app->qs_popup), GDK_WINDOW_TYPE_HINT_UTILITY);
+        gtk_window_set_default_size(GTK_WINDOW(app->qs_popup), pw, ph);
+        gtk_widget_set_size_request(app->qs_popup, pw, ph);
+        gtk_window_stick(GTK_WINDOW(app->qs_popup));
+
+        app->qs_vbox = gtk_vbox_new(FALSE, 4);
+        gtk_container_add(GTK_CONTAINER(app->qs_popup), app->qs_vbox);
+
+        app->qs_area = gtk_drawing_area_new();
+        gtk_widget_set_size_request(app->qs_area, pw, ph);
+        gtk_widget_add_events(app->qs_area,
+            GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
+        g_signal_connect(app->qs_area, "expose-event", G_CALLBACK(on_qs_expose), app);
+        g_signal_connect(app->qs_area, "button-press-event", G_CALLBACK(on_qs_button_press), app);
+        g_signal_connect(app->qs_area, "button-release-event", G_CALLBACK(on_qs_button_release), app);
+        g_signal_connect(app->qs_area, "motion-notify-event", G_CALLBACK(on_qs_motion), app);
+        gtk_box_pack_start(GTK_BOX(app->qs_vbox), app->qs_area, TRUE, TRUE, 0);
+        gtk_widget_show(app->qs_area);
+
+        app->qs_pass_box = gtk_hbox_new(FALSE, 6);
+        gtk_container_set_border_width(GTK_CONTAINER(app->qs_pass_box), 8);
+        app->qs_pass_entry = gtk_entry_new();
+        gtk_entry_set_visibility(GTK_ENTRY(app->qs_pass_entry), FALSE);
+        gtk_widget_set_size_request(app->qs_pass_entry, 200, 28);
+        GtkWidget *btn_ok = gtk_button_new_with_label("Connect");
+        g_signal_connect(app->qs_pass_entry, "activate", G_CALLBACK(on_wifi_pass_submit), app);
+        g_signal_connect(btn_ok, "clicked", G_CALLBACK(on_wifi_pass_submit), app);
+        gtk_box_pack_start(GTK_BOX(app->qs_pass_box), app->qs_pass_entry, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(app->qs_pass_box), btn_ok, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(app->qs_vbox), app->qs_pass_box, FALSE, FALSE, 0);
+
+        g_signal_connect(app->qs_popup, "focus-out-event", G_CALLBACK(on_qs_focus_out), app);
+        g_signal_connect(app->qs_popup, "key-press-event", G_CALLBACK(on_qs_key), app);
+        gtk_widget_show(app->qs_vbox);
+    }
+
+    if (GTK_WIDGET_VISIBLE(app->qs_popup)) {
+        gtk_widget_hide(app->qs_popup);
+        return;
+    }
+    if ((g_get_monotonic_time() - app->qs_hidden_us) < 220000) {
+        return;
+    }
+
+    qs_set_page(app, 0);
+    int px = app->width - pw - 6;
+    if (px < 6) px = 6;
+    gtk_window_move(GTK_WINDOW(app->qs_popup), px, PANEL_HEIGHT + 2);
+    gtk_widget_show(app->qs_popup);
+    gtk_window_move(GTK_WINDOW(app->qs_popup), px, PANEL_HEIGHT + 2);
+    gtk_window_present(GTK_WINDOW(app->qs_popup));
+    gtk_widget_queue_draw(app->qs_area);
 }
 
 static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data) {
@@ -1032,12 +2258,9 @@ static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
                pt_in_rect(ev->x, ev->y, app->r_disk) ||
                pt_in_rect(ev->x, ev->y, app->r_net)) {
         spawn_cmd("/usr/bin/phantom-monitor");
-    } else if (app->has_audio && pt_in_rect(ev->x, ev->y, app->r_vol)) {
-        spawn_cmd("amixer -q sset Master toggle");
-        sample_audio(app);
-        gtk_widget_queue_draw(app->area);
-    } else if (pt_in_rect(ev->x, ev->y, app->r_power)) {
-        show_power_menu(app, ev);
+    } else if (pt_in_rect(ev->x, ev->y, app->r_qs) ||
+               pt_in_rect(ev->x, ev->y, app->r_clk)) {
+        toggle_qs_popup(app);
     }
     return TRUE;
 }
@@ -1047,11 +2270,15 @@ static gboolean on_scroll(GtkWidget *w, GdkEventScroll *ev, gpointer data) {
     PanelApp *app = (PanelApp *)data;
     if (pt_in_rect(ev->x, ev->y, app->r_ws)) {
         switch_workspace_delta((ev->direction == GDK_SCROLL_UP) ? -1 : 1);
-    } else if (app->has_audio && pt_in_rect(ev->x, ev->y, app->r_vol)) {
+    } else if (app->has_audio && pt_in_rect(ev->x, ev->y, app->r_qs_bar_vol)) {
         spawn_cmd((ev->direction == GDK_SCROLL_UP)
                   ? "amixer -q sset Master 5%+"
                   : "amixer -q sset Master 5%-");
         sample_audio(app);
+        gtk_widget_queue_draw(app->area);
+    } else if (pt_in_rect(ev->x, ev->y, app->r_qs_bar_bright)) {
+        app->bright_pct += (ev->direction == GDK_SCROLL_UP) ? 5 : -5;
+        apply_display_settings(app);
         gtk_widget_queue_draw(app->area);
     }
     return TRUE;
@@ -1082,6 +2309,9 @@ static gboolean on_tick(gpointer data) {
     gtk_widget_queue_draw(app->area);
     if (app->ram_popup && GTK_WIDGET_VISIBLE(app->ram_popup)) {
         gtk_widget_queue_draw(app->ram_popup_area);
+    }
+    if (app->qs_popup && GTK_WIDGET_VISIBLE(app->qs_popup)) {
+        gtk_widget_queue_draw(app->qs_area);
     }
     return TRUE;
 }

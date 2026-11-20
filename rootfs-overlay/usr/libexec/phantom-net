@@ -1,0 +1,98 @@
+#!/bin/sh
+# Strict privileged network helper invoked by phantom-panel via sudo
+set -eu
+
+CONF="/etc/wpa_supplicant.conf"
+PIDFILE="/var/run/wpa_supplicant.pid"
+
+valid_iface() {
+    case "$1" in
+        [a-zA-Z0-9_-]*)
+            [ -d "/sys/class/net/$1" ]
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+ensure_wpa() {
+    iface="$1"
+    mkdir -p /var/run/wpa_supplicant
+    chgrp netdev /var/run/wpa_supplicant 2>/dev/null || true
+    chmod 0770 /var/run/wpa_supplicant
+    if [ ! -S "/var/run/wpa_supplicant/${iface}" ]; then
+        /usr/sbin/wpa_supplicant -B -P "${PIDFILE}" -i "${iface}" -c "${CONF}"
+        sleep 1
+    fi
+}
+
+cmd="${1:-}"
+case "${cmd}" in
+    wifi-up)
+        iface="${2:?iface required}"
+        valid_iface "${iface}"
+        ip link set "${iface}" up
+        ensure_wpa "${iface}"
+        ;;
+    wifi-down)
+        iface="${2:?iface required}"
+        valid_iface "${iface}"
+        if [ -S "/var/run/wpa_supplicant/${iface}" ]; then
+            wpa_cli -i "${iface}" disconnect >/dev/null 2>&1 || true
+        fi
+        ip addr flush dev "${iface}" 2>/dev/null || true
+        ip link set "${iface}" down
+        ;;
+    wifi-disconnect)
+        iface="${2:?iface required}"
+        valid_iface "${iface}"
+        if [ -S "/var/run/wpa_supplicant/${iface}" ]; then
+            wpa_cli -i "${iface}" disconnect >/dev/null 2>&1 || true
+        fi
+        ip addr flush dev "${iface}" 2>/dev/null || true
+        ;;
+    wifi-connect)
+        iface="${2:?iface required}"
+        ssid="${3:?ssid required}"
+        valid_iface "${iface}"
+        pass=""
+        IFS= read -r pass || true
+
+        ip link set "${iface}" up
+        ensure_wpa "${iface}"
+
+        # Check if network already saved
+        net_id="$(wpa_cli -i "${iface}" list_networks | awk -F'\t' -v s="${ssid}" 'NR>1 && $2==s {print $1; exit}')"
+        if [ -z "${net_id}" ]; then
+            net_id="$(wpa_cli -i "${iface}" add_network | tail -n 1)"
+            wpa_cli -i "${iface}" set_network "${net_id}" ssid "\"${ssid}\"" >/dev/null
+        fi
+
+        if [ -n "${pass}" ]; then
+            wpa_cli -i "${iface}" set_network "${net_id}" psk "\"${pass}\"" >/dev/null
+        else
+            wpa_cli -i "${iface}" set_network "${net_id}" key_mgmt NONE >/dev/null
+        fi
+
+        wpa_cli -i "${iface}" enable_network "${net_id}" >/dev/null
+        wpa_cli -i "${iface}" select_network "${net_id}" >/dev/null
+        wpa_cli -i "${iface}" save_config >/dev/null 2>&1 || true
+
+        # Wait up to 8s for WPA association, then obtain DHCP lease
+        i=0
+        while [ "${i}" -lt 16 ]; do
+            st="$(wpa_cli -i "${iface}" status 2>/dev/null | sed -n 's/^wpa_state=//p')"
+            [ "${st}" = "COMPLETED" ] && break
+            usleep 500000
+            i=$((i + 1))
+        done
+        udhcpc -i "${iface}" -n -q -t 6 -b >/dev/null 2>&1 || udhcpc -i "${iface}" -n -q -t 5 >/dev/null 2>&1 || true
+        ;;
+    dhcp-eth0)
+        ip link set eth0 up 2>/dev/null || true
+        udhcpc -i eth0 -n -q -t 5 >/dev/null 2>&1 || true
+        ;;
+    *)
+        echo "Usage: $0 {wifi-up|wifi-down|wifi-disconnect|wifi-connect|dhcp-eth0}" >&2
+        exit 1
+        ;;
+esac

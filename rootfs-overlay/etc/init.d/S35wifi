@@ -1,0 +1,54 @@
+#!/bin/sh
+#
+# On-demand Wi-Fi setup using wpa_supplicant (uses 0 KB RAM when no WLAN hardware exists)
+#
+
+PIDFILE="/var/run/wpa_supplicant.pid"
+CONF="/etc/wpa_supplicant.conf"
+
+find_wlan_iface() {
+    for d in /sys/class/net/*/wireless; do
+        [ -e "$d" ] || continue
+        basename "$(dirname "$d")"
+        return 0
+    done
+    return 1
+}
+
+start() {
+    WIFACE="$(find_wlan_iface || true)"
+    if [ -z "${WIFACE}" ]; then
+        echo "Skipping Wi-Fi (no wireless interface)"
+        return 0
+    fi
+
+    printf "Starting Wi-Fi (%s): " "${WIFACE}"
+    mkdir -p /var/run/wpa_supplicant
+    chgrp netdev /var/run/wpa_supplicant 2>/dev/null || true
+    chmod 0770 /var/run/wpa_supplicant
+
+    ip link set "${WIFACE}" up 2>/dev/null || true
+    if /usr/sbin/wpa_supplicant -B -P "${PIDFILE}" -i "${WIFACE}" -c "${CONF}" 2>/dev/null; then
+        echo "OK"
+    else
+        echo "WARN"
+    fi
+}
+
+stop() {
+    if [ -f "${PIDFILE}" ]; then
+        printf "Stopping Wi-Fi: "
+        kill "$(cat "${PIDFILE}")" 2>/dev/null || true
+        rm -f "${PIDFILE}"
+        echo "OK"
+    fi
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart|reload) stop; start ;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+
+exit 0

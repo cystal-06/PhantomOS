@@ -47,8 +47,15 @@ if [ -x "${CC_BIN}" ] && [ -x "${PKGCFG_BIN}" ]; then
 
     build_c_app "phantom-monitor" "gtk+-2.0" -lm
     build_c_app "phantom-login" "gtk+-2.0" -lm -lcrypt -lX11
-    build_c_app "phantom-panel" "gtk+-2.0" -lm -lX11
+    build_c_app "phantom-panel" "gtk+-2.0 xrandr" -lm -lX11
     build_c_app "phantom-gestures" "libinput libudev x11" -lm
+fi
+
+# Install curated Wi-Fi firmware blobs if downloaded
+FW_CACHE="${BR_DIR}/dl/wifi-firmware"
+if [ -d "${FW_CACHE}" ] && [ -n "$(ls -A "${FW_CACHE}" 2>/dev/null)" ]; then
+    mkdir -p "${TARGET_DIR}/lib/firmware"
+    cp -a "${FW_CACHE}/." "${TARGET_DIR}/lib/firmware/"
 fi
 
 # Populate default user home from /etc/skel (ownership applied by Buildroot mkusers)

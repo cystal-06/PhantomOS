@@ -5,5 +5,5 @@ Defaults passwd_timeout=5, timestamp_timeout=15
 # Members of group sudo can execute any command after password verification
 %sudo ALL=(ALL:ALL) ALL
 
-# Desktop session power controls for sudo users
-%sudo ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/poweroff, /sbin/halt
+# Desktop session power & network controls for sudo users
+%sudo ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/poweroff, /sbin/halt, /usr/libexec/phantom-net

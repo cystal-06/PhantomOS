@@ -1,0 +1,5 @@
+# Allow desktop user (group video) to adjust laptop backlight directly without sudo
+ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod 0664 /sys/class/backlight/%k/brightness"
+
+# Allow desktop user (group netdev) to toggle rfkill wireless soft-block directly
+KERNEL=="rfkill", GROUP="netdev", MODE="0664"
