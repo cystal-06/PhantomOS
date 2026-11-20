@@ -33,34 +33,58 @@ static void on_term_signal(int sig) {
 }
 
 typedef struct {
+    double x, y, w, h;
+} Rect;
+
+typedef struct {
     GtkWidget *window;
-    GtkWidget *top_title_label;
-    GtkWidget *clock_label;
-    GtkWidget *bottom_info_label;
-    GtkWidget *avatar_area;
-    GtkWidget *role_label;
-    GtkWidget *btn_user_phantom;
-    GtkWidget *btn_user_root;
+    GtkWidget *fixed;
     GtkWidget *user_entry;
     GtkWidget *pass_entry;
-    GtkWidget *toggle_pass_btn;
-    GtkWidget *session_combo;
-    GtkWidget *login_btn;
-    GtkWidget *status_label;
-    GtkWidget *reboot_btn;
-    GtkWidget *poweroff_btn;
 
+    int scr_w;
+    int scr_h;
+
+    /* System metadata */
     char hostname[128];
     char kernel_ver[128];
     char root_mode[48];
     char ip_addr[64];
+    char mem_str[64];
+    char clock_str[64];
 
-    gboolean is_root_selected;
-    gboolean show_password;
-    gboolean auth_locked;
+    /* UI State */
+    int stage;             /* 0 = User Picker, 1 = Password + Inputs */
+    int selected_user_idx; /* 0 = phantom, 1 = root, 2 = custom */
+    int session_mode_idx;  /* 0 = Fluxbox Desktop, 1 = Terminal Console */
+    int power_menu_open;
+    int show_password;
+    int auth_locked;
+    int is_error;
+    char status_msg[192];
+
+    double hx, hy;
+    int hovering;
+
+    /* Interactive Hitboxes */
+    Rect r_card_phantom;
+    Rect r_card_root;
+    Rect r_card_other;
+    Rect r_back_btn;
+    Rect r_eye_btn;
+    Rect r_signin_btn;
+    Rect r_session_btn;
+    Rect r_power_btn;
+    Rect r_reboot_btn;
+    Rect r_poweroff_btn;
+
     pid_t session_pid;
     char active_x_user[64];
 } LoginApp;
+
+static int pt_in_rect(double px, double py, Rect r) {
+    return r.w > 0 && px >= r.x && px <= (r.x + r.w) && py >= r.y && py <= (r.y + r.h);
+}
 
 static void secure_wipe(void *ptr, size_t len) {
     volatile unsigned char *p = (volatile unsigned char *)ptr;
@@ -165,14 +189,165 @@ static void grant_x11_localuser(const char *username, gboolean add) {
     XSync(dpy, False);
 }
 
-static void draw_rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
-    double rad = r;
+static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
     cairo_new_sub_path(cr);
-    cairo_arc(cr, x + w - rad, y + rad, rad, -M_PI / 2.0, 0);
-    cairo_arc(cr, x + w - rad, y + h - rad, rad, 0, M_PI / 2.0);
-    cairo_arc(cr, x + rad, y + h - rad, rad, M_PI / 2.0, M_PI);
-    cairo_arc(cr, x + rad, y + rad, rad, M_PI, 3.0 * M_PI / 2.0);
+    cairo_arc(cr, x + w - r, y + r, r, -M_PI / 2.0, 0);
+    cairo_arc(cr, x + w - r, y + h - r, r, 0, M_PI / 2.0);
+    cairo_arc(cr, x + r, y + h - r, r, M_PI / 2.0, M_PI);
+    cairo_arc(cr, x + r, y + r, r, M_PI, 3.0 * M_PI / 2.0);
     cairo_close_path(cr);
+}
+
+static void draw_text(cairo_t *cr, double x, double y, const char *txt,
+                      double r, double g, double b, int bold, double sz) {
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+                           bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(cr, sz);
+    cairo_set_source_rgb(cr, r, g, b);
+    cairo_move_to(cr, x, y);
+    cairo_show_text(cr, txt);
+    cairo_new_path(cr);
+}
+
+static void draw_text_centered(cairo_t *cr, double cx, double y, const char *txt,
+                               double r, double g, double b, int bold, double sz) {
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+                           bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(cr, sz);
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, txt, &ext);
+    cairo_set_source_rgb(cr, r, g, b);
+    cairo_move_to(cr, cx - ext.width * 0.5 - ext.x_bearing, y);
+    cairo_show_text(cr, txt);
+    cairo_new_path(cr);
+}
+
+static void draw_avatar_disc(cairo_t *cr, double cx, double cy, double r, int is_root, const char *letter) {
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy, r + 3.0, 0, 2.0 * M_PI);
+    if (is_root) cairo_set_source_rgba(cr, 0.953, 0.545, 0.659, 0.25);
+    else cairo_set_source_rgba(cr, 0.329, 0.569, 0.945, 0.28);
+    cairo_set_line_width(cr, 3.0);
+    cairo_stroke(cr);
+
+    cairo_pattern_t *pat = cairo_pattern_create_linear(cx - r, cy - r, cx + r, cy + r);
+    if (is_root) {
+        cairo_pattern_add_color_stop_rgb(pat, 0.0, 0.941, 0.443, 0.545);
+        cairo_pattern_add_color_stop_rgb(pat, 1.0, 0.980, 0.690, 0.502);
+    } else {
+        cairo_pattern_add_color_stop_rgb(pat, 0.0, 0.208, 0.518, 0.894);
+        cairo_pattern_add_color_stop_rgb(pat, 1.0, 0.545, 0.478, 0.949);
+    }
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy, r, 0, 2.0 * M_PI);
+    cairo_set_source(cr, pat);
+    cairo_fill(cr);
+    cairo_pattern_destroy(pat);
+
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, r * 0.86);
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, letter, &ext);
+    cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+    cairo_move_to(cr, cx - ext.width * 0.5 - ext.x_bearing, cy - ext.height * 0.5 - ext.y_bearing);
+    cairo_show_text(cr, letter);
+    cairo_new_path(cr);
+}
+
+static void draw_user_glyph(cairo_t *cr, double cx, double cy) {
+    cairo_set_source_rgb(cr, 0.580, 0.620, 0.745);
+    cairo_set_line_width(cr, 1.4);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy - 3.0, 2.8, 0, 2.0 * M_PI);
+    cairo_stroke(cr);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy + 5.5, 5.0, M_PI * 1.1, M_PI * 1.9);
+    cairo_stroke(cr);
+}
+
+static void draw_lock_glyph(cairo_t *cr, double cx, double cy) {
+    cairo_set_source_rgb(cr, 0.580, 0.620, 0.745);
+    cairo_set_line_width(cr, 1.4);
+    rounded_rect(cr, cx - 4.5, cy - 0.5, 9.0, 6.5, 1.5);
+    cairo_stroke(cr);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy - 1.0, 2.8, M_PI, 2.0 * M_PI);
+    cairo_stroke(cr);
+}
+
+static void draw_eye_glyph(cairo_t *cr, double cx, double cy, int active) {
+    if (active) cairo_set_source_rgb(cr, 0.537, 0.706, 0.980);
+    else cairo_set_source_rgb(cr, 0.580, 0.620, 0.745);
+    cairo_set_line_width(cr, 1.3);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy + 3.0, 6.5, -2.35, -0.79);
+    cairo_stroke(cr);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy - 3.0, 6.5, 0.79, 2.35);
+    cairo_stroke(cr);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy, 1.8, 0, 2.0 * M_PI);
+    cairo_fill(cr);
+    if (!active) {
+        cairo_move_to(cr, cx - 5.0, cy + 4.5);
+        cairo_line_to(cr, cx + 5.0, cy - 4.5);
+        cairo_stroke(cr);
+    }
+}
+
+static void draw_power_glyph(cairo_t *cr, double cx, double cy, double r, double red, double grn, double blu) {
+    cairo_set_source_rgb(cr, red, grn, blu);
+    cairo_set_line_width(cr, 1.5);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy, r, -1.0, 4.14);
+    cairo_stroke(cr);
+    cairo_move_to(cr, cx, cy - r - 1.5);
+    cairo_line_to(cr, cx, cy - 0.5);
+    cairo_stroke(cr);
+}
+
+static void layout_entries(LoginApp *app) {
+    int w = app->scr_w;
+    int h = app->scr_h;
+    if (app->stage == 1) {
+        double cw = 396.0, ch = 392.0;
+        double cx = (w - cw) * 0.5;
+        double cy = (h - ch) * 0.5;
+        int ix = (int)(cx + 76.0);
+        int iw = 248;
+        gtk_fixed_move(GTK_FIXED(app->fixed), app->user_entry, ix, (int)(cy + 168.0));
+        gtk_widget_set_size_request(app->user_entry, iw, 24);
+        gtk_fixed_move(GTK_FIXED(app->fixed), app->pass_entry, ix, (int)(cy + 224.0));
+        gtk_widget_set_size_request(app->pass_entry, iw - 28, 24);
+    }
+}
+
+static void enter_stage(LoginApp *app, int stage, int user_idx) {
+    app->stage = stage;
+    app->selected_user_idx = user_idx;
+    app->power_menu_open = 0;
+    app->is_error = 0;
+    app->status_msg[0] = '\0';
+
+    if (stage == 0) {
+        gtk_widget_hide(app->user_entry);
+        gtk_widget_hide(app->pass_entry);
+        gtk_entry_set_text(GTK_ENTRY(app->pass_entry), "");
+    } else {
+        if (user_idx == 0) {
+            gtk_entry_set_text(GTK_ENTRY(app->user_entry), "phantom");
+        } else if (user_idx == 1) {
+            gtk_entry_set_text(GTK_ENTRY(app->user_entry), "root");
+        } else {
+            gtk_entry_set_text(GTK_ENTRY(app->user_entry), "");
+        }
+        gtk_entry_set_text(GTK_ENTRY(app->pass_entry), "");
+        layout_entries(app);
+        gtk_widget_show(app->user_entry);
+        gtk_widget_show(app->pass_entry);
+        gtk_widget_grab_focus((user_idx == 2) ? app->user_entry : app->pass_entry);
+    }
+    gtk_widget_queue_draw(app->window);
 }
 
 static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
@@ -181,198 +356,296 @@ static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpoin
     cairo_t *cr = gdk_cairo_create(widget->window);
     int w = widget->allocation.width;
     int h = widget->allocation.height;
+    app->scr_w = w;
+    app->scr_h = h;
 
-    /* Deep Catppuccin Crust/Mantle vertical gradient */
-    cairo_pattern_t *bg_pat = cairo_pattern_create_linear(0, 0, w, h);
-    cairo_pattern_add_color_stop_rgb(bg_pat, 0.0, 0.055, 0.062, 0.095);
-    cairo_pattern_add_color_stop_rgb(bg_pat, 0.55, 0.082, 0.086, 0.133);
-    cairo_pattern_add_color_stop_rgb(bg_pat, 1.0, 0.067, 0.067, 0.106);
-    cairo_set_source(cr, bg_pat);
+    /* Deep Arch/GNOME midnight atmospheric backdrop */
+    cairo_pattern_t *bg = cairo_pattern_create_linear(0, 0, w, h);
+    cairo_pattern_add_color_stop_rgb(bg, 0.0, 0.043, 0.055, 0.090);
+    cairo_pattern_add_color_stop_rgb(bg, 0.5, 0.071, 0.086, 0.141);
+    cairo_pattern_add_color_stop_rgb(bg, 1.0, 0.055, 0.063, 0.106);
+    cairo_set_source(cr, bg);
     cairo_paint(cr);
-    cairo_pattern_destroy(bg_pat);
+    cairo_pattern_destroy(bg);
 
-    /* Subtle top-left blue radial ambient glow */
-    cairo_pattern_t *glow1 = cairo_pattern_create_radial(w * 0.22, h * 0.22, 10, w * 0.22, h * 0.22, w * 0.45);
-    cairo_pattern_add_color_stop_rgba(glow1, 0.0, 0.537, 0.706, 0.980, 0.14);
-    cairo_pattern_add_color_stop_rgba(glow1, 1.0, 0.537, 0.706, 0.980, 0.0);
-    cairo_set_source(cr, glow1);
+    /* Soft ambient radial lighting */
+    cairo_pattern_t *g1 = cairo_pattern_create_radial(w * 0.25, h * 0.22, 10, w * 0.25, h * 0.22, w * 0.48);
+    cairo_pattern_add_color_stop_rgba(g1, 0.0, 0.208, 0.518, 0.894, 0.16);
+    cairo_pattern_add_color_stop_rgba(g1, 1.0, 0.208, 0.518, 0.894, 0.0);
+    cairo_set_source(cr, g1);
     cairo_paint(cr);
-    cairo_pattern_destroy(glow1);
+    cairo_pattern_destroy(g1);
 
-    /* Subtle bottom-right mauve ambient glow */
-    cairo_pattern_t *glow2 = cairo_pattern_create_radial(w * 0.80, h * 0.78, 10, w * 0.80, h * 0.78, w * 0.42);
-    cairo_pattern_add_color_stop_rgba(glow2, 0.0, 0.796, 0.651, 0.969, 0.12);
-    cairo_pattern_add_color_stop_rgba(glow2, 1.0, 0.796, 0.651, 0.969, 0.0);
-    cairo_set_source(cr, glow2);
+    cairo_pattern_t *g2 = cairo_pattern_create_radial(w * 0.78, h * 0.76, 10, w * 0.78, h * 0.76, w * 0.44);
+    cairo_pattern_add_color_stop_rgba(g2, 0.0, 0.545, 0.478, 0.949, 0.13);
+    cairo_pattern_add_color_stop_rgba(g2, 1.0, 0.545, 0.478, 0.949, 0.0);
+    cairo_set_source(cr, g2);
     cairo_paint(cr);
-    cairo_pattern_destroy(glow2);
+    cairo_pattern_destroy(g2);
 
-    /* Subtle tech dot grid */
-    cairo_set_source_rgba(cr, 0.576, 0.600, 0.702, 0.08);
-    for (int gx = 24; gx < w; gx += 32) {
-        for (int gy = 56; gy < h - 56; gy += 32) {
-            cairo_rectangle(cr, gx, gy, 1.5, 1.5);
-        }
+    /* Minimal translucent top bar (GDM style) */
+    cairo_set_source_rgba(cr, 0.039, 0.047, 0.078, 0.72);
+    cairo_rectangle(cr, 0, 0, w, 36);
+    cairo_fill(cr);
+
+    draw_text(cr, 18, 22, "PhantomOS", 0.537, 0.706, 0.980, 1, 11.0);
+    draw_text(cr, 102, 22, app->hostname, 0.580, 0.620, 0.745, 0, 10.0);
+    draw_text_centered(cr, w * 0.5, 22, app->clock_str, 0.902, 0.922, 0.969, 1, 10.5);
+
+    /* Top-right Power button */
+    app->r_power_btn = (Rect){ w - 46, 5, 32, 26 };
+    int pwr_hov = app->hovering && pt_in_rect(app->hx, app->hy, app->r_power_btn);
+    if (pwr_hov || app->power_menu_open) {
+        rounded_rect(cr, app->r_power_btn.x, app->r_power_btn.y, app->r_power_btn.w, app->r_power_btn.h, 13.0);
+        cairo_set_source_rgb(cr, 0.200, 0.220, 0.302);
+        cairo_fill(cr);
     }
-    cairo_fill(cr);
+    draw_power_glyph(cr, w - 30, 18.5, 4.8, 0.902, 0.922, 0.969);
 
-    /* Top & Bottom translucent bars */
-    cairo_set_source_rgba(cr, 0.067, 0.067, 0.106, 0.78);
-    cairo_rectangle(cr, 0, 0, w, 44);
-    cairo_rectangle(cr, 0, h - 42, w, 42);
-    cairo_fill(cr);
+    /* Optional floating Power submenu */
+    if (app->power_menu_open) {
+        double pmx = w - 156.0, pmy = 42.0, pmw = 142.0, pmh = 84.0;
+        rounded_rect(cr, pmx, pmy, pmw, pmh, 12.0);
+        cairo_set_source_rgb(cr, 0.118, 0.133, 0.192);
+        cairo_fill_preserve(cr);
+        cairo_set_source_rgb(cr, 0.251, 0.282, 0.388);
+        cairo_set_line_width(cr, 1.0);
+        cairo_stroke(cr);
 
-    cairo_set_source_rgba(cr, 0.271, 0.278, 0.353, 0.55);
-    cairo_set_line_width(cr, 1.0);
-    cairo_move_to(cr, 0, 44.5);
-    cairo_line_to(cr, w, 44.5);
-    cairo_move_to(cr, 0, h - 42.5);
-    cairo_line_to(cr, w, h - 42.5);
-    cairo_stroke(cr);
+        app->r_reboot_btn   = (Rect){ pmx + 8, pmy + 8, pmw - 16, 30 };
+        app->r_poweroff_btn = (Rect){ pmx + 8, pmy + 44, pmw - 16, 30 };
+        int rh = app->hovering && pt_in_rect(app->hx, app->hy, app->r_reboot_btn);
+        int ph = app->hovering && pt_in_rect(app->hx, app->hy, app->r_poweroff_btn);
 
-    /* Center Login Glass Card */
-    double cw = 436.0;
-    double ch = 468.0;
-    double cx = (w - cw) / 2.0;
-    double cy = (h - ch) / 2.0;
+        rounded_rect(cr, app->r_reboot_btn.x, app->r_reboot_btn.y, app->r_reboot_btn.w, app->r_reboot_btn.h, 8.0);
+        cairo_set_source_rgb(cr, rh ? 0.22 : 0.15, rh ? 0.24 : 0.17, rh ? 0.33 : 0.24);
+        cairo_fill(cr);
+        draw_text(cr, pmx + 22, pmy + 27, "Reboot", 0.976, 0.702, 0.529, 1, 10.5);
 
-    /* Outer soft shadow */
-    draw_rounded_rect(cr, cx - 4, cy + 6, cw + 8, ch + 8, 18.0);
-    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.42);
-    cairo_fill(cr);
-
-    /* Card fill */
-    draw_rounded_rect(cr, cx, cy, cw, ch, 16.0);
-    cairo_set_source_rgba(cr, 0.118, 0.118, 0.180, 0.94);
-    cairo_fill_preserve(cr);
-
-    /* Accent top border highlight */
-    if (app->is_root_selected) {
-        cairo_set_source_rgba(cr, 0.953, 0.545, 0.659, 0.55);
+        rounded_rect(cr, app->r_poweroff_btn.x, app->r_poweroff_btn.y, app->r_poweroff_btn.w, app->r_poweroff_btn.h, 8.0);
+        cairo_set_source_rgb(cr, ph ? 0.28 : 0.15, ph ? 0.18 : 0.17, ph ? 0.22 : 0.24);
+        cairo_fill(cr);
+        draw_text(cr, pmx + 22, pmy + 63, "Power Off", 0.953, 0.545, 0.659, 1, 10.5);
     } else {
-        cairo_set_source_rgba(cr, 0.537, 0.706, 0.980, 0.45);
+        app->r_reboot_btn = app->r_poweroff_btn = (Rect){0,0,0,0};
     }
-    cairo_set_line_width(cr, 1.3);
-    cairo_stroke(cr);
+
+    if (app->stage == 0) {
+        /* STAGE 0: Arch/GNOME GDM User Picker */
+        app->r_back_btn = app->r_eye_btn = app->r_signin_btn = (Rect){0,0,0,0};
+
+        double cx = w * 0.5;
+        double start_y = h * 0.5 - 125.0;
+
+        draw_text_centered(cr, cx, start_y, "Sign In", 0.922, 0.941, 0.980, 1, 20.0);
+        draw_text_centered(cr, cx, start_y + 24, "Choose an account to continue", 0.580, 0.620, 0.745, 0, 10.5);
+
+        double pw = 332.0, ph = 68.0;
+        double px = cx - pw * 0.5;
+        app->r_card_phantom = (Rect){ px, start_y + 48.0, pw, ph };
+        app->r_card_root    = (Rect){ px, start_y + 128.0, pw, ph };
+        app->r_card_other   = (Rect){ cx - 72.0, start_y + 214.0, 144.0, 28.0 };
+
+        struct {
+            Rect r;
+            const char *name;
+            const char *sub;
+            const char *letter;
+            int is_root;
+            int idx;
+        } cards[2] = {
+            { app->r_card_phantom, "phantom", "Standard User  •  sudo", "P", 0, 0 },
+            { app->r_card_root,    "root",    "Administrator  •  UID 0", "R", 1, 1 }
+        };
+
+        for (int i = 0; i < 2; i++) {
+            int hov = app->hovering && pt_in_rect(app->hx, app->hy, cards[i].r);
+            int sel = (app->selected_user_idx == cards[i].idx);
+
+            /* Soft shadow */
+            rounded_rect(cr, cards[i].r.x - 1, cards[i].r.y + 3, cards[i].r.w + 2, cards[i].r.h + 2, 18.0);
+            cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.30);
+            cairo_fill(cr);
+
+            rounded_rect(cr, cards[i].r.x, cards[i].r.y, cards[i].r.w, cards[i].r.h, 16.0);
+            cairo_set_source_rgba(cr, hov ? 0.165 : 0.118, hov ? 0.188 : 0.133, hov ? 0.275 : 0.196, 0.92);
+            cairo_fill_preserve(cr);
+            if (hov || sel) {
+                if (cards[i].is_root) cairo_set_source_rgba(cr, 0.953, 0.545, 0.659, hov ? 0.85 : 0.45);
+                else cairo_set_source_rgba(cr, 0.537, 0.706, 0.980, hov ? 0.85 : 0.45);
+                cairo_set_line_width(cr, hov ? 1.5 : 1.1);
+            } else {
+                cairo_set_source_rgba(cr, 0.251, 0.282, 0.388, 0.55);
+                cairo_set_line_width(cr, 1.0);
+            }
+            cairo_stroke(cr);
+
+            draw_avatar_disc(cr, cards[i].r.x + 36.0, cards[i].r.y + ph * 0.5, 20.0,
+                             cards[i].is_root, cards[i].letter);
+
+            draw_text(cr, cards[i].r.x + 70.0, cards[i].r.y + 30.0, cards[i].name,
+                      0.922, 0.941, 0.980, 1, 13.0);
+            draw_text(cr, cards[i].r.x + 70.0, cards[i].r.y + 48.0, cards[i].sub,
+                      0.580, 0.620, 0.745, 0, 9.5);
+
+            /* Chevron > */
+            double ax = cards[i].r.x + pw - 24.0, ay = cards[i].r.y + ph * 0.5;
+            cairo_set_source_rgb(cr, 0.651, 0.690, 0.800);
+            cairo_set_line_width(cr, 1.6);
+            cairo_move_to(cr, ax - 3.0, ay - 5.0);
+            cairo_line_to(cr, ax + 3.0, ay);
+            cairo_line_to(cr, ax - 3.0, ay + 5.0);
+            cairo_stroke(cr);
+        }
+
+        int ohov = app->hovering && pt_in_rect(app->hx, app->hy, app->r_card_other);
+        rounded_rect(cr, app->r_card_other.x, app->r_card_other.y, app->r_card_other.w, app->r_card_other.h, 14.0);
+        cairo_set_source_rgba(cr, ohov ? 0.20 : 0.13, ohov ? 0.22 : 0.15, ohov ? 0.31 : 0.22, ohov ? 0.9 : 0.6);
+        cairo_fill(cr);
+        draw_text_centered(cr, cx, app->r_card_other.y + 18.0, "Not listed? Enter user",
+                           0.651, 0.690, 0.800, 0, 9.5);
+
+        if (app->status_msg[0]) {
+            draw_text_centered(cr, cx, start_y + 266.0, app->status_msg,
+                               app->is_error ? 0.953 : 0.651,
+                               app->is_error ? 0.545 : 0.890,
+                               app->is_error ? 0.659 : 0.631, 0, 10.0);
+        }
+    } else {
+        /* STAGE 1: Revealed sleek 2-input Card (User + Password + Sign In) */
+        app->r_card_phantom = app->r_card_root = app->r_card_other = (Rect){0,0,0,0};
+
+        double cw = 396.0, ch = 392.0;
+        double cx = (w - cw) * 0.5;
+        double cy = (h - ch) * 0.5;
+
+        const char *u_txt = gtk_entry_get_text(GTK_ENTRY(app->user_entry));
+        int is_root = (u_txt && strcmp(u_txt, "root") == 0);
+        char letter[2] = { 'P', '\0' };
+        if (u_txt && u_txt[0]) letter[0] = (char)toupper((unsigned char)u_txt[0]);
+
+        /* Card Shadow */
+        rounded_rect(cr, cx - 4, cy + 8, cw + 8, ch + 8, 24.0);
+        cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.45);
+        cairo_fill(cr);
+
+        /* Glass Card Surface */
+        rounded_rect(cr, cx, cy, cw, ch, 22.0);
+        cairo_set_source_rgba(cr, 0.098, 0.110, 0.165, 0.95);
+        cairo_fill_preserve(cr);
+        if (is_root) cairo_set_source_rgba(cr, 0.953, 0.545, 0.659, 0.45);
+        else cairo_set_source_rgba(cr, 0.329, 0.569, 0.945, 0.45);
+        cairo_set_line_width(cr, 1.2);
+        cairo_stroke(cr);
+
+        /* Top-left Back Circle Button */
+        app->r_back_btn = (Rect){ cx + 18, cy + 18, 32, 32 };
+        int bhov = app->hovering && pt_in_rect(app->hx, app->hy, app->r_back_btn);
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, cx + 34, cy + 34, 16.0, 0, 2.0 * M_PI);
+        cairo_set_source_rgb(cr, bhov ? 0.220 : 0.145, bhov ? 0.240 : 0.161, bhov ? 0.330 : 0.235);
+        cairo_fill(cr);
+        cairo_set_source_rgb(cr, 0.851, 0.878, 0.961);
+        cairo_set_line_width(cr, 1.6);
+        cairo_move_to(cr, cx + 39, cy + 34);
+        cairo_line_to(cr, cx + 29, cy + 34);
+        cairo_move_to(cr, cx + 33, cy + 29.5);
+        cairo_line_to(cr, cx + 28.5, cy + 34);
+        cairo_line_to(cr, cx + 33, cy + 38.5);
+        cairo_stroke(cr);
+
+        /* Avatar + User Name */
+        draw_avatar_disc(cr, cx + cw * 0.5, cy + 68.0, 36.0, is_root, letter);
+        const char *disp_name = (u_txt && u_txt[0]) ? u_txt : "Enter Username";
+        draw_text_centered(cr, cx + cw * 0.5, cy + 128.0, disp_name,
+                           0.922, 0.941, 0.980, 1, 14.5);
+        draw_text_centered(cr, cx + cw * 0.5, cy + 145.0,
+                           is_root ? "Administrator (UID 0)" : "Standard User (sudo)",
+                           0.580, 0.620, 0.745, 0, 9.5);
+
+        /* Input 1: Username Pill Frame */
+        double ix = cx + 38.0, iw = cw - 76.0, ih = 40.0;
+        double y1 = cy + 160.0;
+        int u_foc = gtk_widget_has_focus(app->user_entry);
+        rounded_rect(cr, ix, y1, iw, ih, 12.0);
+        cairo_set_source_rgb(cr, 0.063, 0.071, 0.110);
+        cairo_fill_preserve(cr);
+        if (u_foc) cairo_set_source_rgb(cr, is_root ? 0.953 : 0.329, is_root ? 0.545 : 0.569, is_root ? 0.659 : 0.945);
+        else cairo_set_source_rgb(cr, 0.212, 0.239, 0.333);
+        cairo_set_line_width(cr, u_foc ? 1.6 : 1.1);
+        cairo_stroke(cr);
+        draw_user_glyph(cr, ix + 19.0, y1 + ih * 0.5);
+
+        /* Input 2: Password Pill Frame */
+        double y2 = cy + 216.0;
+        int p_foc = gtk_widget_has_focus(app->pass_entry);
+        rounded_rect(cr, ix, y2, iw, ih, 12.0);
+        cairo_set_source_rgb(cr, 0.063, 0.071, 0.110);
+        cairo_fill_preserve(cr);
+        if (p_foc) cairo_set_source_rgb(cr, is_root ? 0.953 : 0.329, is_root ? 0.545 : 0.569, is_root ? 0.659 : 0.945);
+        else cairo_set_source_rgb(cr, 0.212, 0.239, 0.333);
+        cairo_set_line_width(cr, p_foc ? 1.6 : 1.1);
+        cairo_stroke(cr);
+        draw_lock_glyph(cr, ix + 19.0, y2 + ih * 0.5);
+
+        app->r_eye_btn = (Rect){ ix + iw - 34.0, y2 + 4.0, 28.0, 32.0 };
+        draw_eye_glyph(cr, ix + iw - 19.0, y2 + ih * 0.5, app->show_password);
+
+        /* Sign In Pill CTA */
+        double y3 = cy + 278.0;
+        app->r_signin_btn = (Rect){ ix, y3, iw, 42.0 };
+        int shov = app->hovering && pt_in_rect(app->hx, app->hy, app->r_signin_btn);
+        rounded_rect(cr, ix, y3, iw, 42.0, 21.0);
+        if (app->auth_locked) {
+            cairo_set_source_rgb(cr, 0.23, 0.25, 0.34);
+        } else if (is_root) {
+            cairo_set_source_rgb(cr, shov ? 0.980 : 0.922, shov ? 0.600 : 0.478, shov ? 0.700 : 0.588);
+        } else {
+            cairo_set_source_rgb(cr, shov ? 0.267 : 0.208, shov ? 0.584 : 0.518, shov ? 0.961 : 0.894);
+        }
+        cairo_fill(cr);
+        draw_text_centered(cr, cx + cw * 0.5, y3 + 25.5,
+                           app->auth_locked ? "Checking..." : "Sign In",
+                           1.0, 1.0, 1.0, 1, 11.5);
+
+        /* Status message */
+        const char *smsg = app->status_msg[0] ? app->status_msg : "Press Enter to unlock";
+        draw_text_centered(cr, cx + cw * 0.5, cy + 354.0, smsg,
+                           app->is_error ? 0.953 : 0.580,
+                           app->is_error ? 0.545 : 0.620,
+                           app->is_error ? 0.659 : 0.745,
+                           app->is_error, 9.8);
+    }
+
+    /* Minimal Bottom Bar */
+    char foot[384];
+    snprintf(foot, sizeof(foot), "Kernel %s  •  RAM %s  •  eth0: %s  •  %s",
+             app->kernel_ver, app->mem_str, app->ip_addr, app->root_mode);
+    draw_text(cr, 18, h - 14, foot, 0.520, 0.557, 0.667, 0, 9.5);
+
+    /* Bottom-right Session Pill (GDM Gear) */
+    const char *sess_txt = (app->session_mode_idx == 1) ? "Session: Terminal" : "Session: Fluxbox";
+    app->r_session_btn = (Rect){ w - 160, h - 34, 144, 24 };
+    int sghov = app->hovering && pt_in_rect(app->hx, app->hy, app->r_session_btn);
+    rounded_rect(cr, app->r_session_btn.x, app->r_session_btn.y, app->r_session_btn.w, app->r_session_btn.h, 12.0);
+    cairo_set_source_rgba(cr, sghov ? 0.20 : 0.13, sghov ? 0.22 : 0.15, sghov ? 0.31 : 0.21, 0.85);
+    cairo_fill(cr);
+    draw_text_centered(cr, w - 88, h - 18, sess_txt, 0.804, 0.839, 0.957, 1, 9.5);
 
     cairo_destroy(cr);
     return FALSE;
 }
 
-static gboolean on_avatar_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
-    (void)event;
-    LoginApp *app = (LoginApp *)data;
-    cairo_t *cr = gdk_cairo_create(widget->window);
-    int w = widget->allocation.width;
-    int h = widget->allocation.height;
-    double cx = w / 2.0;
-    double cy = h / 2.0;
-    double r = (w < h ? w : h) / 2.0 - 4.0;
-
-    /* Outer glow ring */
-    cairo_arc(cr, cx, cy, r + 2.5, 0, 2.0 * M_PI);
-    if (app->is_root_selected) {
-        cairo_set_source_rgba(cr, 0.953, 0.545, 0.659, 0.35);
-    } else {
-        cairo_set_source_rgba(cr, 0.537, 0.706, 0.980, 0.35);
-    }
-    cairo_set_line_width(cr, 3.0);
-    cairo_stroke(cr);
-
-    /* Avatar disc gradient */
-    cairo_pattern_t *pat = cairo_pattern_create_linear(cx - r, cy - r, cx + r, cy + r);
-    if (app->is_root_selected) {
-        cairo_pattern_add_color_stop_rgb(pat, 0.0, 0.953, 0.545, 0.659);
-        cairo_pattern_add_color_stop_rgb(pat, 1.0, 0.980, 0.702, 0.529);
-    } else {
-        cairo_pattern_add_color_stop_rgb(pat, 0.0, 0.537, 0.706, 0.980);
-        cairo_pattern_add_color_stop_rgb(pat, 1.0, 0.796, 0.651, 0.969);
-    }
-    cairo_arc(cr, cx, cy, r, 0, 2.0 * M_PI);
-    cairo_set_source(cr, pat);
-    cairo_fill(cr);
-    cairo_pattern_destroy(pat);
-
-    /* Minimal user silhouette or initial */
-    const char *uname = gtk_entry_get_text(GTK_ENTRY(app->user_entry));
-    char ch[2] = { 'P', '\0' };
-    if (uname && uname[0]) {
-        ch[0] = (char)toupper((unsigned char)uname[0]);
-    }
-
-    cairo_set_source_rgb(cr, 0.067, 0.067, 0.106);
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-    cairo_set_font_size(cr, 34.0);
-    cairo_text_extents_t ext;
-    cairo_text_extents(cr, ch, &ext);
-    cairo_move_to(cr, cx - ext.width / 2.0 - ext.x_bearing, cy - ext.height / 2.0 - ext.y_bearing);
-    cairo_show_text(cr, ch);
-
-    cairo_destroy(cr);
-    return TRUE;
-}
-
-static void style_button(GtkWidget *btn, const char *bg_hex, const char *fg_hex, const char *hover_hex) {
-    GdkColor bg, fg, hover;
-    if (gdk_color_parse(bg_hex, &bg)) {
-        gtk_widget_modify_bg(btn, GTK_STATE_NORMAL, &bg);
-        gtk_widget_modify_bg(btn, GTK_STATE_INSENSITIVE, &bg);
-    }
-    if (gdk_color_parse(hover_hex, &hover)) {
-        gtk_widget_modify_bg(btn, GTK_STATE_PRELIGHT, &hover);
-        gtk_widget_modify_bg(btn, GTK_STATE_ACTIVE, &hover);
-    }
-    if (gdk_color_parse(fg_hex, &fg)) {
-        gtk_widget_modify_fg(btn, GTK_STATE_NORMAL, &fg);
-        gtk_widget_modify_fg(btn, GTK_STATE_PRELIGHT, &fg);
-        gtk_widget_modify_fg(btn, GTK_STATE_ACTIVE, &fg);
-        GtkWidget *child = gtk_bin_get_child(GTK_BIN(btn));
-        if (child) {
-            gtk_widget_modify_fg(child, GTK_STATE_NORMAL, &fg);
-            gtk_widget_modify_fg(child, GTK_STATE_PRELIGHT, &fg);
-            gtk_widget_modify_fg(child, GTK_STATE_ACTIVE, &fg);
-        }
-    }
-}
-
 static void style_entry(GtkWidget *entry) {
-    GdkColor base, text, bg;
-    gdk_color_parse("#11111b", &base);
-    gdk_color_parse("#cdd6f4", &text);
-    gdk_color_parse("#313244", &bg);
+    GdkColor base, text;
+    gdk_color_parse("#10121c", &base);
+    gdk_color_parse("#e4e7f5", &text);
+    gtk_entry_set_has_frame(GTK_ENTRY(entry), FALSE);
     gtk_widget_modify_base(entry, GTK_STATE_NORMAL, &base);
     gtk_widget_modify_text(entry, GTK_STATE_NORMAL, &text);
-    gtk_widget_modify_bg(entry, GTK_STATE_NORMAL, &bg);
-    gtk_widget_modify_bg(entry, GTK_STATE_SELECTED, &bg);
-}
-
-static void refresh_user_visuals(LoginApp *app) {
-    const char *uname = gtk_entry_get_text(GTK_ENTRY(app->user_entry));
-    app->is_root_selected = (uname && strcmp(uname, "root") == 0);
-
-    if (app->is_root_selected) {
-        gtk_label_set_markup(GTK_LABEL(app->role_label),
-            "<span foreground='#f38ba8' weight='bold'>root</span>"
-            "<span foreground='#a6adc8'>  •  Administrator (UID 0)</span>");
-        style_button(app->btn_user_phantom, "#181825", "#a6adc8", "#313244");
-        style_button(app->btn_user_root, "#f38ba8", "#11111b", "#eba0ac");
-        style_button(app->login_btn, "#f38ba8", "#11111b", "#eba0ac");
-    } else {
-        char esc[128];
-        snprintf(esc, sizeof(esc), "%s", (uname && uname[0]) ? uname : "phantom");
-        char *markup = g_markup_printf_escaped(
-            "<span foreground='#89b4fa' weight='bold'>%s</span>"
-            "<span foreground='#a6adc8'>  •  Standard User (sudo)</span>",
-            esc);
-        gtk_label_set_markup(GTK_LABEL(app->role_label), markup);
-        g_free(markup);
-        style_button(app->btn_user_phantom, "#89b4fa", "#11111b", "#b4befe");
-        style_button(app->btn_user_root, "#181825", "#a6adc8", "#313244");
-        style_button(app->login_btn, "#89b4fa", "#11111b", "#b4befe");
-    }
-
-    gtk_widget_queue_draw(app->avatar_area);
-    gtk_widget_queue_draw(app->window);
+    PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
+    gtk_widget_modify_font(entry, fd);
+    pango_font_description_free(fd);
 }
 
 static gboolean on_clock_tick(gpointer data) {
@@ -380,101 +653,35 @@ static gboolean on_clock_tick(gpointer data) {
     time_t now = time(NULL);
     struct tm tm_now;
     localtime_r(&now, &tm_now);
-
-    char tbuf[96];
-    strftime(tbuf, sizeof(tbuf), "%H:%M:%S  |  %a %d/%m/%Y", &tm_now);
-    char *markup = g_markup_printf_escaped(
-        "<span foreground='#cdd6f4' weight='bold'>%s</span>", tbuf);
-    gtk_label_set_markup(GTK_LABEL(app->clock_label), markup);
-    g_free(markup);
-
-    char mem[64];
-    read_memory_summary(mem, sizeof(mem));
-    char *bmarkup = g_markup_printf_escaped(
-        "<span foreground='#9399b2'>RAM: </span><span foreground='#a6e3a1'>%s</span>"
-        "<span foreground='#585b70'>   •   </span>"
-        "<span foreground='#9399b2'>Mode: </span><span foreground='#cba6f7'>%s</span>",
-        mem, app->root_mode);
-    gtk_label_set_markup(GTK_LABEL(app->bottom_info_label), bmarkup);
-    g_free(bmarkup);
-
+    strftime(app->clock_str, sizeof(app->clock_str), "%a %b %d   %H:%M", &tm_now);
+    read_memory_summary(app->mem_str, sizeof(app->mem_str));
+    gtk_widget_queue_draw(app->window);
     return TRUE;
-}
-
-static void on_select_phantom(GtkButton *btn, gpointer data) {
-    (void)btn;
-    LoginApp *app = (LoginApp *)data;
-    gtk_entry_set_text(GTK_ENTRY(app->user_entry), "phantom");
-    gtk_entry_set_text(GTK_ENTRY(app->pass_entry), "");
-    gtk_label_set_markup(GTK_LABEL(app->status_label), "");
-    refresh_user_visuals(app);
-    gtk_widget_grab_focus(app->pass_entry);
-}
-
-static void on_select_root(GtkButton *btn, gpointer data) {
-    (void)btn;
-    LoginApp *app = (LoginApp *)data;
-    gtk_entry_set_text(GTK_ENTRY(app->user_entry), "root");
-    gtk_entry_set_text(GTK_ENTRY(app->pass_entry), "");
-    gtk_label_set_markup(GTK_LABEL(app->status_label), "");
-    refresh_user_visuals(app);
-    gtk_widget_grab_focus(app->pass_entry);
-}
-
-static void on_user_entry_changed(GtkEditable *editable, gpointer data) {
-    (void)editable;
-    refresh_user_visuals((LoginApp *)data);
-}
-
-static void on_user_activate(GtkEntry *entry, gpointer data) {
-    (void)entry;
-    LoginApp *app = (LoginApp *)data;
-    gtk_widget_grab_focus(app->pass_entry);
-}
-
-static void on_toggle_password(GtkButton *btn, gpointer data) {
-    (void)btn;
-    LoginApp *app = (LoginApp *)data;
-    app->show_password = !app->show_password;
-    gtk_entry_set_visibility(GTK_ENTRY(app->pass_entry), app->show_password);
-    gtk_button_set_label(GTK_BUTTON(app->toggle_pass_btn), app->show_password ? "Hide" : "Show");
-    gtk_widget_grab_focus(app->pass_entry);
 }
 
 static gboolean on_unlock_auth(gpointer data) {
     LoginApp *app = (LoginApp *)data;
     app->auth_locked = FALSE;
-    gtk_widget_set_sensitive(app->login_btn, TRUE);
     gtk_widget_set_sensitive(app->pass_entry, TRUE);
     gtk_widget_grab_focus(app->pass_entry);
+    gtk_widget_queue_draw(app->window);
     return FALSE;
-}
-
-static void set_error_status(LoginApp *app, const char *msg) {
-    char *markup = g_markup_printf_escaped(
-        "<span foreground='#f38ba8' weight='bold'>%s</span>", msg);
-    gtk_label_set_markup(GTK_LABEL(app->status_label), markup);
-    g_free(markup);
 }
 
 static gboolean verify_credentials(const char *username, const char *password, struct passwd **out_pw) {
     if (!username || !username[0] || !password) return FALSE;
-
     struct passwd *pw = getpwnam(username);
     if (!pw) return FALSE;
 
     struct spwd *sp = getspnam(username);
     const char *hash = (sp && sp->sp_pwdp) ? sp->sp_pwdp : pw->pw_passwd;
-    if (!hash || hash[0] == '\0' || hash[0] == '!' || hash[0] == '*') {
-        return FALSE;
-    }
+    if (!hash || hash[0] == '\0' || hash[0] == '!' || hash[0] == '*') return FALSE;
 
     struct crypt_data cdata;
     memset(&cdata, 0, sizeof(cdata));
     char *computed = crypt_r(password, hash, &cdata);
     int ok = (computed && constant_time_streq(computed, hash));
     secure_wipe(&cdata, sizeof(cdata));
-
     if (ok) {
         *out_pw = pw;
         return TRUE;
@@ -482,7 +689,7 @@ static gboolean verify_credentials(const char *username, const char *password, s
     return FALSE;
 }
 
-static gboolean focus_password_idle(gpointer data) {
+static gboolean focus_login_idle(gpointer data) {
     LoginApp *app = (LoginApp *)data;
     GdkCursor *cursor = gdk_cursor_new(GDK_LEFT_PTR);
     if (cursor) {
@@ -501,14 +708,13 @@ static gboolean focus_password_idle(gpointer data) {
         XFlush(dpy);
     }
     gtk_window_present(GTK_WINDOW(app->window));
-    gtk_widget_grab_focus(app->pass_entry);
+    if (app->stage == 1) gtk_widget_grab_focus(app->pass_entry);
     return FALSE;
 }
 
 static gboolean check_term_signal(gpointer data) {
     LoginApp *app = (LoginApp *)data;
     if (!g_terminate_requested) return TRUE;
-
     if (app->session_pid > 0) {
         kill(-app->session_pid, SIGTERM);
         usleep(150000);
@@ -527,8 +733,6 @@ static gboolean check_term_signal(gpointer data) {
 static void on_session_exit(GPid pid, gint status, gpointer data) {
     (void)status;
     LoginApp *app = (LoginApp *)data;
-
-    /* Clean up remaining processes inside the ended user session */
     if (pid > 0) {
         kill(-pid, SIGTERM);
         usleep(150000);
@@ -538,20 +742,18 @@ static void on_session_exit(GPid pid, gint status, gpointer data) {
     g_spawn_close_pid(pid);
     app->session_pid = -1;
 
-    /* Revoke temporary X11 access for non-root session */
     if (app->active_x_user[0] && strcmp(app->active_x_user, "root") != 0) {
         grant_x11_localuser(app->active_x_user, FALSE);
     }
     app->active_x_user[0] = '\0';
 
-    /* Restore polished login screen */
-    gtk_entry_set_text(GTK_ENTRY(app->pass_entry), "");
-    gtk_label_set_markup(GTK_LABEL(app->status_label),
-        "<span foreground='#a6e3a1'>Session closed. Ready to sign in.</span>");
-    gtk_widget_set_sensitive(app->login_btn, TRUE);
+    app->auth_locked = FALSE;
     gtk_widget_set_sensitive(app->pass_entry, TRUE);
-    gtk_widget_show_all(app->window);
-    g_idle_add(focus_password_idle, app);
+    enter_stage(app, 0, 0);
+    app->is_error = 0;
+    snprintf(app->status_msg, sizeof(app->status_msg), "Session closed cleanly.");
+    gtk_widget_show(app->window);
+    g_idle_add(focus_login_idle, app);
 }
 
 static void launch_user_session(LoginApp *app, struct passwd *pw, const char *session_mode) {
@@ -568,14 +770,10 @@ static void launch_user_session(LoginApp *app, struct passwd *pw, const char *se
     }
     snprintf(app->active_x_user, sizeof(app->active_x_user), "%s", pw->pw_name);
 
-    /* Ensure the login UI hides before starting the window manager */
     gtk_widget_hide(app->window);
-    while (gtk_events_pending()) {
-        gtk_main_iteration();
-    }
+    while (gtk_events_pending()) gtk_main_iteration();
     gdk_flush();
 
-    /* Capture fields before fork */
     uid_t uid = pw->pw_uid;
     gid_t gid = pw->pw_gid;
     char uname[64], uhome[256], ushell[128];
@@ -586,8 +784,10 @@ static void launch_user_session(LoginApp *app, struct passwd *pw, const char *se
     pid_t pid = fork();
     if (pid < 0) {
         grant_x11_localuser(uname, FALSE);
-        gtk_widget_show_all(app->window);
-        set_error_status(app, "Failed to fork session process.");
+        gtk_widget_show(app->window);
+        app->is_error = 1;
+        snprintf(app->status_msg, sizeof(app->status_msg), "Failed to fork session process.");
+        gtk_widget_queue_draw(app->window);
         return;
     }
 
@@ -595,18 +795,10 @@ static void launch_user_session(LoginApp *app, struct passwd *pw, const char *se
         signal(SIGCHLD, SIG_DFL);
         signal(SIGTERM, SIG_DFL);
         signal(SIGINT, SIG_DFL);
-
         setsid();
 
-        if (setgid(gid) != 0 || initgroups(uname, gid) != 0 || setuid(uid) != 0) {
-            _exit(126);
-        }
-
-        if (chdir(uhome) != 0) {
-            if (chdir("/") != 0) {
-                _exit(126);
-            }
-        }
+        if (setgid(gid) != 0 || initgroups(uname, gid) != 0 || setuid(uid) != 0) _exit(126);
+        if (chdir(uhome) != 0 && chdir("/") != 0) _exit(126);
 
         clearenv();
         setenv("HOME", uhome, 1);
@@ -629,10 +821,8 @@ static void launch_user_session(LoginApp *app, struct passwd *pw, const char *se
     g_child_watch_add((GPid)pid, on_session_exit, app);
 }
 
-static void on_attempt_login(GtkWidget *widget, gpointer data) {
-    (void)widget;
-    LoginApp *app = (LoginApp *)data;
-    if (app->auth_locked) return;
+static void attempt_login(LoginApp *app) {
+    if (app->auth_locked || app->stage != 1) return;
 
     const char *raw_user = gtk_entry_get_text(GTK_ENTRY(app->user_entry));
     const char *raw_pass = gtk_entry_get_text(GTK_ENTRY(app->pass_entry));
@@ -651,10 +841,11 @@ static void on_attempt_login(GtkWidget *widget, gpointer data) {
             secure_wipe(password, strlen(password));
             g_free(password);
         }
-        set_error_status(app, "Invalid username or password. Try again.");
+        app->is_error = 1;
+        snprintf(app->status_msg, sizeof(app->status_msg), "Authentication failed. Check password.");
         app->auth_locked = TRUE;
-        gtk_widget_set_sensitive(app->login_btn, FALSE);
         gtk_widget_set_sensitive(app->pass_entry, FALSE);
+        gtk_widget_queue_draw(app->window);
         g_timeout_add(1000, on_unlock_auth, app);
         return;
     }
@@ -662,228 +853,182 @@ static void on_attempt_login(GtkWidget *widget, gpointer data) {
     secure_wipe(password, strlen(password));
     g_free(password);
 
-    int active_session = gtk_combo_box_get_active(GTK_COMBO_BOX(app->session_combo));
-    const char *session_mode = (active_session == 1) ? "terminal" : "desktop";
-
-    gtk_label_set_markup(GTK_LABEL(app->status_label), "");
+    const char *session_mode = (app->session_mode_idx == 1) ? "terminal" : "desktop";
+    app->is_error = 0;
+    app->status_msg[0] = '\0';
     launch_user_session(app, pw, session_mode);
 }
 
-static void confirm_power_action(LoginApp *app, const char *title, const char *question, const char *bin_path) {
-    GtkWidget *dlg = gtk_message_dialog_new(
-        GTK_WINDOW(app->window),
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        GTK_MESSAGE_QUESTION,
-        GTK_BUTTONS_YES_NO,
-        "%s", question);
-    gtk_window_set_title(GTK_WINDOW(dlg), title);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
-    if (resp == GTK_RESPONSE_YES) {
-        sync();
-        execl(bin_path, bin_path, (char *)NULL);
+static void on_entry_activate(GtkEntry *e, gpointer data) {
+    LoginApp *app = (LoginApp *)data;
+    if (GTK_WIDGET(e) == app->user_entry) {
+        gtk_widget_grab_focus(app->pass_entry);
+    } else {
+        attempt_login(app);
     }
 }
 
-static void on_reboot_clicked(GtkButton *btn, gpointer data) {
-    (void)btn;
-    confirm_power_action((LoginApp *)data, "Reboot PhantomOS",
-                         "Reboot PhantomOS now? Unsaved RAM changes will reset.", "/sbin/reboot");
+static gboolean on_entry_changed_or_focus(GtkWidget *w, gpointer data) {
+    (void)w;
+    gtk_widget_queue_draw(((LoginApp *)data)->window);
+    return FALSE;
 }
 
-static void on_poweroff_clicked(GtkButton *btn, gpointer data) {
-    (void)btn;
-    confirm_power_action((LoginApp *)data, "Power Off PhantomOS",
-                         "Power off the system now? Unsaved RAM changes will reset.", "/sbin/poweroff");
+static gboolean on_entry_focus_ev(GtkWidget *w, GdkEventFocus *ev, gpointer data) {
+    (void)w;
+    (void)ev;
+    gtk_widget_queue_draw(((LoginApp *)data)->window);
+    return FALSE;
 }
 
-static void setup_dark_rc(void) {
-    const char *rc =
-        "style \"phantom-login-dark\" {\n"
-        "  bg[NORMAL]   = \"#1e1e2e\"\n"
-        "  bg[PRELIGHT] = \"#313244\"\n"
-        "  bg[ACTIVE]   = \"#45475a\"\n"
-        "  bg[SELECTED] = \"#45475a\"\n"
-        "  fg[NORMAL]   = \"#cdd6f4\"\n"
-        "  fg[PRELIGHT] = \"#cdd6f4\"\n"
-        "  fg[ACTIVE]   = \"#cdd6f4\"\n"
-        "  fg[SELECTED] = \"#ffffff\"\n"
-        "  base[NORMAL] = \"#11111b\"\n"
-        "  text[NORMAL] = \"#cdd6f4\"\n"
-        "}\n"
-        "class \"GtkWidget\" style \"phantom-login-dark\"\n";
-    gtk_rc_parse_string(rc);
+static gboolean on_window_button(GtkWidget *w, GdkEventButton *ev, gpointer data) {
+    (void)w;
+    LoginApp *app = (LoginApp *)data;
+    if (ev->button != 1) return FALSE;
+
+    if (pt_in_rect(ev->x, ev->y, app->r_power_btn)) {
+        app->power_menu_open = !app->power_menu_open;
+        gtk_widget_queue_draw(app->window);
+        return TRUE;
+    }
+    if (app->power_menu_open) {
+        if (pt_in_rect(ev->x, ev->y, app->r_reboot_btn)) {
+            sync();
+            execl("/sbin/reboot", "/sbin/reboot", (char *)NULL);
+            return TRUE;
+        }
+        if (pt_in_rect(ev->x, ev->y, app->r_poweroff_btn)) {
+            sync();
+            execl("/sbin/poweroff", "/sbin/poweroff", (char *)NULL);
+            return TRUE;
+        }
+        app->power_menu_open = 0;
+        gtk_widget_queue_draw(app->window);
+        return TRUE;
+    }
+
+    if (pt_in_rect(ev->x, ev->y, app->r_session_btn)) {
+        app->session_mode_idx = !app->session_mode_idx;
+        gtk_widget_queue_draw(app->window);
+        return TRUE;
+    }
+
+    if (app->stage == 0) {
+        if (pt_in_rect(ev->x, ev->y, app->r_card_phantom)) {
+            enter_stage(app, 1, 0);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_card_root)) {
+            enter_stage(app, 1, 1);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_card_other)) {
+            enter_stage(app, 1, 2);
+        }
+    } else {
+        if (pt_in_rect(ev->x, ev->y, app->r_back_btn)) {
+            enter_stage(app, 0, app->selected_user_idx < 2 ? app->selected_user_idx : 0);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_eye_btn)) {
+            app->show_password = !app->show_password;
+            gtk_entry_set_visibility(GTK_ENTRY(app->pass_entry), app->show_password);
+            gtk_widget_grab_focus(app->pass_entry);
+            gtk_widget_queue_draw(app->window);
+        } else if (pt_in_rect(ev->x, ev->y, app->r_signin_btn)) {
+            attempt_login(app);
+        }
+    }
+    return TRUE;
+}
+
+static gboolean on_window_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data) {
+    (void)w;
+    LoginApp *app = (LoginApp *)data;
+    app->hx = ev->x;
+    app->hy = ev->y;
+    app->hovering = 1;
+    gtk_widget_queue_draw(app->window);
+    return FALSE;
+}
+
+static gboolean on_window_key(GtkWidget *w, GdkEventKey *ev, gpointer data) {
+    (void)w;
+    LoginApp *app = (LoginApp *)data;
+    if (app->stage == 0) {
+        if (ev->keyval == GDK_Up || ev->keyval == GDK_Down || ev->keyval == GDK_Tab) {
+            app->selected_user_idx = (app->selected_user_idx == 0) ? 1 : 0;
+            gtk_widget_queue_draw(app->window);
+            return TRUE;
+        }
+        if (ev->keyval == GDK_Return || ev->keyval == GDK_KP_Enter || ev->keyval == GDK_space) {
+            enter_stage(app, 1, app->selected_user_idx);
+            return TRUE;
+        }
+    } else {
+        if (ev->keyval == GDK_Escape) {
+            enter_stage(app, 0, app->selected_user_idx < 2 ? app->selected_user_idx : 0);
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
-    setup_dark_rc();
 
     LoginApp app;
     memset(&app, 0, sizeof(app));
     app.session_pid = -1;
     read_system_metadata(&app);
 
-    GdkScreen *screen = gdk_screen_get_default();
-    int scr_w = gdk_screen_get_width(screen);
-    int scr_h = gdk_screen_get_height(screen);
-    if (scr_w < 800) scr_w = 1280;
-    if (scr_h < 600) scr_h = 800;
+    GdkScreen *scr = gdk_screen_get_default();
+    app.scr_w = gdk_screen_get_width(scr);
+    app.scr_h = gdk_screen_get_height(scr);
+    if (app.scr_w < 800) app.scr_w = 1280;
+    if (app.scr_h < 600) app.scr_h = 800;
 
     app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(app.window), PHANTOM_LOGIN_TITLE);
     gtk_window_set_decorated(GTK_WINDOW(app.window), FALSE);
-    gtk_window_set_default_size(GTK_WINDOW(app.window), scr_w, scr_h);
+    gtk_window_set_default_size(GTK_WINDOW(app.window), app.scr_w, app.scr_h);
+    gtk_widget_set_size_request(app.window, app.scr_w, app.scr_h);
     gtk_window_move(GTK_WINDOW(app.window), 0, 0);
-    gtk_widget_set_size_request(app.window, scr_w, scr_h);
     gtk_widget_set_app_paintable(app.window, TRUE);
-    g_signal_connect(app.window, "expose-event", G_CALLBACK(on_window_expose), &app);
+    gtk_widget_add_events(app.window,
+        GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK | GDK_KEY_PRESS_MASK);
 
-    GtkWidget *root_vbox = gtk_vbox_new(FALSE, 0);
-    gtk_container_add(GTK_CONTAINER(app.window), root_vbox);
-
-    /* Top Bar (44px) */
-    GtkWidget *top_hbox = gtk_hbox_new(FALSE, 12);
-    gtk_widget_set_size_request(top_hbox, -1, 44);
-    gtk_container_set_border_width(GTK_CONTAINER(top_hbox), 10);
-
-    app.top_title_label = gtk_label_new(NULL);
-    char *tmarkup = g_markup_printf_escaped(
-        "<span foreground='#89b4fa' weight='bold' size='large'>PhantomOS</span>"
-        "<span foreground='#585b70'>  •  </span>"
-        "<span foreground='#a6adc8'>%s</span>"
-        "<span foreground='#585b70'>  •  </span>"
-        "<span foreground='#9399b2'>Kernel %s</span>"
-        "<span foreground='#585b70'>  •  </span>"
-        "<span foreground='#a6e3a1'>eth0: %s</span>",
-        app.hostname, app.kernel_ver, app.ip_addr);
-    gtk_label_set_markup(GTK_LABEL(app.top_title_label), tmarkup);
-    g_free(tmarkup);
-    gtk_box_pack_start(GTK_BOX(top_hbox), app.top_title_label, FALSE, FALSE, 8);
-
-    app.clock_label = gtk_label_new(NULL);
-    gtk_box_pack_end(GTK_BOX(top_hbox), app.clock_label, FALSE, FALSE, 8);
-    gtk_box_pack_start(GTK_BOX(root_vbox), top_hbox, FALSE, FALSE, 0);
-
-    /* Centering area for Login Card */
-    GtkWidget *center_align = gtk_alignment_new(0.5f, 0.5f, 0.0f, 0.0f);
-    gtk_box_pack_start(GTK_BOX(root_vbox), center_align, TRUE, TRUE, 0);
-
-    GtkWidget *card_vbox = gtk_vbox_new(FALSE, 10);
-    gtk_widget_set_size_request(card_vbox, 384, -1);
-    gtk_container_set_border_width(GTK_CONTAINER(card_vbox), 20);
-    gtk_container_add(GTK_CONTAINER(center_align), card_vbox);
-
-    /* Avatar */
-    GtkWidget *av_align = gtk_alignment_new(0.5f, 0.5f, 0.0f, 0.0f);
-    app.avatar_area = gtk_drawing_area_new();
-    gtk_widget_set_size_request(app.avatar_area, 86, 86);
-    g_signal_connect(app.avatar_area, "expose-event", G_CALLBACK(on_avatar_expose), &app);
-    gtk_container_add(GTK_CONTAINER(av_align), app.avatar_area);
-    gtk_box_pack_start(GTK_BOX(card_vbox), av_align, FALSE, FALSE, 2);
-
-    app.role_label = gtk_label_new(NULL);
-    gtk_box_pack_start(GTK_BOX(card_vbox), app.role_label, FALSE, FALSE, 2);
-
-    /* Account quick switcher */
-    GtkWidget *switch_hbox = gtk_hbox_new(TRUE, 8);
-    app.btn_user_phantom = gtk_button_new_with_label("phantom");
-    app.btn_user_root = gtk_button_new_with_label("root");
-    gtk_widget_set_size_request(app.btn_user_phantom, -1, 30);
-    gtk_widget_set_size_request(app.btn_user_root, -1, 30);
-    g_signal_connect(app.btn_user_phantom, "clicked", G_CALLBACK(on_select_phantom), &app);
-    g_signal_connect(app.btn_user_root, "clicked", G_CALLBACK(on_select_root), &app);
-    gtk_box_pack_start(GTK_BOX(switch_hbox), app.btn_user_phantom, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(switch_hbox), app.btn_user_root, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(card_vbox), switch_hbox, FALSE, FALSE, 4);
-
-    /* Username */
-    GtkWidget *user_lbl = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(user_lbl), "<span foreground='#bac2de' weight='bold'>Username</span>");
-    gtk_misc_set_alignment(GTK_MISC(user_lbl), 0.0f, 0.5f);
-    gtk_box_pack_start(GTK_BOX(card_vbox), user_lbl, FALSE, FALSE, 0);
+    app.fixed = gtk_fixed_new();
+    gtk_container_add(GTK_CONTAINER(app.window), app.fixed);
 
     app.user_entry = gtk_entry_new();
-    gtk_entry_set_text(GTK_ENTRY(app.user_entry), "phantom");
-    gtk_widget_set_size_request(app.user_entry, -1, 34);
     style_entry(app.user_entry);
-    g_signal_connect(app.user_entry, "changed", G_CALLBACK(on_user_entry_changed), &app);
-    g_signal_connect(app.user_entry, "activate", G_CALLBACK(on_user_activate), &app);
-    gtk_box_pack_start(GTK_BOX(card_vbox), app.user_entry, FALSE, FALSE, 0);
+    gtk_fixed_put(GTK_FIXED(app.fixed), app.user_entry, 0, 0);
 
-    /* Password + toggle */
-    GtkWidget *pass_lbl = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(pass_lbl), "<span foreground='#bac2de' weight='bold'>Password</span>");
-    gtk_misc_set_alignment(GTK_MISC(pass_lbl), 0.0f, 0.5f);
-    gtk_box_pack_start(GTK_BOX(card_vbox), pass_lbl, FALSE, FALSE, 0);
-
-    GtkWidget *pass_hbox = gtk_hbox_new(FALSE, 6);
     app.pass_entry = gtk_entry_new();
+    style_entry(app.pass_entry);
     gtk_entry_set_visibility(GTK_ENTRY(app.pass_entry), FALSE);
     gtk_entry_set_invisible_char(GTK_ENTRY(app.pass_entry), 0x2022);
-    gtk_widget_set_size_request(app.pass_entry, -1, 34);
-    style_entry(app.pass_entry);
-    g_signal_connect(app.pass_entry, "activate", G_CALLBACK(on_attempt_login), &app);
+    gtk_fixed_put(GTK_FIXED(app.fixed), app.pass_entry, 0, 0);
 
-    app.toggle_pass_btn = gtk_button_new_with_label("Show");
-    gtk_widget_set_size_request(app.toggle_pass_btn, 62, 34);
-    style_button(app.toggle_pass_btn, "#313244", "#cdd6f4", "#45475a");
-    g_signal_connect(app.toggle_pass_btn, "clicked", G_CALLBACK(on_toggle_password), &app);
+    g_signal_connect(app.window, "expose-event", G_CALLBACK(on_window_expose), &app);
+    g_signal_connect(app.window, "button-press-event", G_CALLBACK(on_window_button), &app);
+    g_signal_connect(app.window, "motion-notify-event", G_CALLBACK(on_window_motion), &app);
+    g_signal_connect(app.window, "key-press-event", G_CALLBACK(on_window_key), &app);
 
-    gtk_box_pack_start(GTK_BOX(pass_hbox), app.pass_entry, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(pass_hbox), app.toggle_pass_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(card_vbox), pass_hbox, FALSE, FALSE, 0);
+    g_signal_connect(app.user_entry, "changed", G_CALLBACK(on_entry_changed_or_focus), &app);
+    g_signal_connect(app.user_entry, "activate", G_CALLBACK(on_entry_activate), &app);
+    g_signal_connect(app.user_entry, "focus-in-event", G_CALLBACK(on_entry_focus_ev), &app);
+    g_signal_connect(app.user_entry, "focus-out-event", G_CALLBACK(on_entry_focus_ev), &app);
 
-    /* Session selector */
-    GtkWidget *sess_hbox = gtk_hbox_new(FALSE, 8);
-    GtkWidget *sess_lbl = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(sess_lbl), "<span foreground='#bac2de'>Session:</span>");
-    app.session_combo = gtk_combo_box_new_text();
-    gtk_combo_box_append_text(GTK_COMBO_BOX(app.session_combo), "Fluxbox Desktop (Full GUI)");
-    gtk_combo_box_append_text(GTK_COMBO_BOX(app.session_combo), "Terminal Console (Minimal)");
-    gtk_combo_box_set_active(GTK_COMBO_BOX(app.session_combo), 0);
-    gtk_box_pack_start(GTK_BOX(sess_hbox), sess_lbl, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(sess_hbox), app.session_combo, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(card_vbox), sess_hbox, FALSE, FALSE, 4);
+    g_signal_connect(app.pass_entry, "activate", G_CALLBACK(on_entry_activate), &app);
+    g_signal_connect(app.pass_entry, "focus-in-event", G_CALLBACK(on_entry_focus_ev), &app);
+    g_signal_connect(app.pass_entry, "focus-out-event", G_CALLBACK(on_entry_focus_ev), &app);
 
-    /* Sign In CTA */
-    app.login_btn = gtk_button_new_with_label("Sign In");
-    gtk_widget_set_size_request(app.login_btn, -1, 38);
-    g_signal_connect(app.login_btn, "clicked", G_CALLBACK(on_attempt_login), &app);
-    gtk_box_pack_start(GTK_BOX(card_vbox), app.login_btn, FALSE, FALSE, 4);
-
-    app.status_label = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(app.status_label),
-        "<span foreground='#9399b2'>Default lab login: phantom / phantom</span>");
-    gtk_box_pack_start(GTK_BOX(card_vbox), app.status_label, FALSE, FALSE, 2);
-
-    /* Bottom Bar (42px) */
-    GtkWidget *bot_hbox = gtk_hbox_new(FALSE, 10);
-    gtk_widget_set_size_request(bot_hbox, -1, 42);
-    gtk_container_set_border_width(GTK_CONTAINER(bot_hbox), 8);
-
-    app.bottom_info_label = gtk_label_new(NULL);
-    gtk_box_pack_start(GTK_BOX(bot_hbox), app.bottom_info_label, FALSE, FALSE, 8);
-
-    app.poweroff_btn = gtk_button_new_with_label("Power Off");
-    app.reboot_btn = gtk_button_new_with_label("Reboot");
-    style_button(app.poweroff_btn, "#313244", "#f38ba8", "#45475a");
-    style_button(app.reboot_btn, "#313244", "#fab387", "#45475a");
-    g_signal_connect(app.poweroff_btn, "clicked", G_CALLBACK(on_poweroff_clicked), &app);
-    g_signal_connect(app.reboot_btn, "clicked", G_CALLBACK(on_reboot_clicked), &app);
-    gtk_box_pack_end(GTK_BOX(bot_hbox), app.poweroff_btn, FALSE, FALSE, 4);
-    gtk_box_pack_end(GTK_BOX(bot_hbox), app.reboot_btn, FALSE, FALSE, 4);
-    gtk_box_pack_end(GTK_BOX(root_vbox), bot_hbox, FALSE, FALSE, 0);
-
-    refresh_user_visuals(&app);
     on_clock_tick(&app);
     g_timeout_add(1000, on_clock_tick, &app);
     signal(SIGTERM, on_term_signal);
     signal(SIGINT, on_term_signal);
     g_timeout_add(250, check_term_signal, &app);
 
-    gtk_widget_show_all(app.window);
-    g_idle_add(focus_password_idle, &app);
+    gtk_widget_show(app.fixed);
+    gtk_widget_show(app.window);
+    enter_stage(&app, 0, 0);
+    g_idle_add(focus_login_idle, &app);
 
     gtk_main();
     return 0;
