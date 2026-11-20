@@ -2037,7 +2037,8 @@ static gboolean on_qs_button_press(GtkWidget *w, GdkEventButton *ev, gpointer da
             gtk_widget_queue_draw(app->qs_area);
         } else if (app->qs_power_confirm && pt_in_rect(ev->x, ev->y, app->r_qs_logout)) {
             gtk_widget_hide(app->qs_popup);
-            spawn_cmd("killall fluxbox");
+            gdk_flush();
+            spawn_cmd("sh -c 'killall -TERM fluxbox 2>/dev/null; sleep 1; killall -KILL fluxbox 2>/dev/null'");
         } else if (app->qs_power_confirm && pt_in_rect(ev->x, ev->y, app->r_qs_reboot)) {
             gtk_widget_hide(app->qs_popup);
             spawn_cmd("sudo -n /sbin/reboot");

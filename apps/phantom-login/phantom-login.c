@@ -222,36 +222,40 @@ static void draw_text_centered(cairo_t *cr, double cx, double y, const char *txt
     cairo_new_path(cr);
 }
 
-static void draw_avatar_disc(cairo_t *cr, double cx, double cy, double r, int is_root, const char *letter) {
+static void draw_avatar_disc(cairo_t *cr, double cx, double cy, double r, int is_root) {
+    /* Subtle outer ring */
     cairo_new_sub_path(cr);
-    cairo_arc(cr, cx, cy, r + 3.0, 0, 2.0 * M_PI);
-    if (is_root) cairo_set_source_rgba(cr, 0.953, 0.545, 0.659, 0.25);
-    else cairo_set_source_rgba(cr, 0.329, 0.569, 0.945, 0.28);
-    cairo_set_line_width(cr, 3.0);
+    cairo_arc(cr, cx, cy, r + 1.5, 0, 2.0 * M_PI);
+    if (is_root) cairo_set_source_rgba(cr, 0.953, 0.545, 0.659, 0.55);
+    else cairo_set_source_rgba(cr, 0.353, 0.569, 0.910, 0.48);
+    cairo_set_line_width(cr, 1.8);
     cairo_stroke(cr);
 
-    cairo_pattern_t *pat = cairo_pattern_create_linear(cx - r, cy - r, cx + r, cy + r);
-    if (is_root) {
-        cairo_pattern_add_color_stop_rgb(pat, 0.0, 0.941, 0.443, 0.545);
-        cairo_pattern_add_color_stop_rgb(pat, 1.0, 0.980, 0.690, 0.502);
-    } else {
-        cairo_pattern_add_color_stop_rgb(pat, 0.0, 0.208, 0.518, 0.894);
-        cairo_pattern_add_color_stop_rgb(pat, 1.0, 0.545, 0.478, 0.949);
-    }
+    /* Clean dark neutral GNOME-style avatar disc */
     cairo_new_sub_path(cr);
     cairo_arc(cr, cx, cy, r, 0, 2.0 * M_PI);
-    cairo_set_source(cr, pat);
+    if (is_root) cairo_set_source_rgb(cr, 0.212, 0.165, 0.212);
+    else cairo_set_source_rgb(cr, 0.165, 0.192, 0.275);
     cairo_fill(cr);
-    cairo_pattern_destroy(pat);
 
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-    cairo_set_font_size(cr, r * 0.86);
-    cairo_text_extents_t ext;
-    cairo_text_extents(cr, letter, &ext);
-    cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
-    cairo_move_to(cr, cx - ext.width * 0.5 - ext.x_bearing, cy - ext.height * 0.5 - ext.y_bearing);
-    cairo_show_text(cr, letter);
-    cairo_new_path(cr);
+    /* Clipped clean user silhouette (head + shoulders) */
+    cairo_save(cr);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy, r - 1.0, 0, 2.0 * M_PI);
+    cairo_clip(cr);
+
+    if (is_root) cairo_set_source_rgb(cr, 0.961, 0.718, 0.780);
+    else cairo_set_source_rgb(cr, 0.816, 0.855, 0.945);
+
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy - r * 0.16, r * 0.27, 0, 2.0 * M_PI);
+    cairo_fill(cr);
+
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy + r * 0.74, r * 0.56, M_PI, 2.0 * M_PI);
+    cairo_close_path(cr);
+    cairo_fill(cr);
+    cairo_restore(cr);
 }
 
 static void draw_user_glyph(cairo_t *cr, double cx, double cy) {
@@ -450,12 +454,11 @@ static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpoin
             Rect r;
             const char *name;
             const char *sub;
-            const char *letter;
             int is_root;
             int idx;
         } cards[2] = {
-            { app->r_card_phantom, "phantom", "Standard User  •  sudo", "P", 0, 0 },
-            { app->r_card_root,    "root",    "Administrator  •  UID 0", "R", 1, 1 }
+            { app->r_card_phantom, "phantom", "Standard User  •  sudo", 0, 0 },
+            { app->r_card_root,    "root",    "Administrator  •  UID 0", 1, 1 }
         };
 
         for (int i = 0; i < 2; i++) {
@@ -481,7 +484,7 @@ static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpoin
             cairo_stroke(cr);
 
             draw_avatar_disc(cr, cards[i].r.x + 36.0, cards[i].r.y + ph * 0.5, 20.0,
-                             cards[i].is_root, cards[i].letter);
+                             cards[i].is_root);
 
             draw_text(cr, cards[i].r.x + 70.0, cards[i].r.y + 30.0, cards[i].name,
                       0.922, 0.941, 0.980, 1, 13.0);
@@ -521,8 +524,6 @@ static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpoin
 
         const char *u_txt = gtk_entry_get_text(GTK_ENTRY(app->user_entry));
         int is_root = (u_txt && strcmp(u_txt, "root") == 0);
-        char letter[2] = { 'P', '\0' };
-        if (u_txt && u_txt[0]) letter[0] = (char)toupper((unsigned char)u_txt[0]);
 
         /* Card Shadow */
         rounded_rect(cr, cx - 4, cy + 8, cw + 8, ch + 8, 24.0);
@@ -555,7 +556,7 @@ static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpoin
         cairo_stroke(cr);
 
         /* Avatar + User Name */
-        draw_avatar_disc(cr, cx + cw * 0.5, cy + 68.0, 36.0, is_root, letter);
+        draw_avatar_disc(cr, cx + cw * 0.5, cy + 68.0, 36.0, is_root);
         const char *disp_name = (u_txt && u_txt[0]) ? u_txt : "Enter Username";
         draw_text_centered(cr, cx + cw * 0.5, cy + 128.0, disp_name,
                            0.922, 0.941, 0.980, 1, 14.5);
@@ -691,22 +692,26 @@ static gboolean verify_credentials(const char *username, const char *password, s
 
 static gboolean focus_login_idle(gpointer data) {
     LoginApp *app = (LoginApp *)data;
+    if (app->session_pid > 0 || !GTK_WIDGET_VISIBLE(app->window)) {
+        return FALSE;
+    }
+    if (!app->window || !app->window->window || !GTK_WIDGET_MAPPED(app->window)) {
+        return TRUE;
+    }
     GdkCursor *cursor = gdk_cursor_new(GDK_LEFT_PTR);
     if (cursor) {
         GdkWindow *root = gdk_get_default_root_window();
         if (root) gdk_window_set_cursor(root, cursor);
-        if (app->window && app->window->window) {
-            gdk_window_set_cursor(app->window->window, cursor);
-        }
+        gdk_window_set_cursor(app->window->window, cursor);
         gdk_cursor_unref(cursor);
     }
-    if (app->window && app->window->window) {
-        Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
-        Window xwin = GDK_WINDOW_XID(app->window->window);
-        XRaiseWindow(dpy, xwin);
-        XSetInputFocus(dpy, xwin, RevertToPointerRoot, CurrentTime);
-        XFlush(dpy);
-    }
+    Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+    Window xwin = GDK_WINDOW_XID(app->window->window);
+    XUngrabPointer(dpy, CurrentTime);
+    XUngrabKeyboard(dpy, CurrentTime);
+    XRaiseWindow(dpy, xwin);
+    XSetInputFocus(dpy, xwin, RevertToPointerRoot, CurrentTime);
+    XFlush(dpy);
     gtk_window_present(GTK_WINDOW(app->window));
     if (app->stage == 1) gtk_widget_grab_focus(app->pass_entry);
     return FALSE;
@@ -752,8 +757,11 @@ static void on_session_exit(GPid pid, gint status, gpointer data) {
     enter_stage(app, 0, 0);
     app->is_error = 0;
     snprintf(app->status_msg, sizeof(app->status_msg), "Session closed cleanly.");
+    gtk_window_move(GTK_WINDOW(app->window), 0, 0);
     gtk_widget_show(app->window);
-    g_idle_add(focus_login_idle, app);
+    if (app->window->window) gdk_window_raise(app->window->window);
+    gdk_flush();
+    g_timeout_add(60, focus_login_idle, app);
 }
 
 static void launch_user_session(LoginApp *app, struct passwd *pw, const char *session_mode) {
