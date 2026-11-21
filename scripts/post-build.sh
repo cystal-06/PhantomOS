@@ -59,6 +59,11 @@ if [ -d "${FW_CACHE}" ] && [ -n "$(ls -A "${FW_CACHE}" 2>/dev/null)" ]; then
     cp -a "${FW_CACHE}/." "${TARGET_DIR}/lib/firmware/"
 fi
 
+# Update icon cache for PhantomGNOME theme
+if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -d "${TARGET_DIR}/usr/share/icons/PhantomGNOME" ]; then
+    gtk-update-icon-cache -f -t "${TARGET_DIR}/usr/share/icons/PhantomGNOME" >/dev/null 2>&1 || true
+fi
+
 # Populate default user home from /etc/skel (ownership applied by Buildroot mkusers)
 mkdir -p "${TARGET_DIR}/opt/firefox" "${TARGET_DIR}/root/Downloads"
 if [ -d "${TARGET_DIR}/etc/skel" ]; then
