@@ -176,6 +176,8 @@ typedef struct {
     int hovering;
     Rect r_brand;
     Rect r_ws;
+    int hot_corner_latched;
+    gint64 hot_corner_us;
     double qs_anim_t;
     double ram_anim_t;
     guint anim_id;
@@ -1265,7 +1267,16 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     cairo_line_to(cr, w, h - 0.5);
     cairo_stroke(cr);
 
-    /* LEFT SIDE: Activities Overview Pill + Workspace + Quick App Icons */
+    /* LEFT SIDE: Activities Overview Pill + Hot Corner Glow + Workspace + Quick App Icons */
+    if (app->hovering && app->hover_x < 28.0 && app->hover_y < 22.0) {
+        cairo_pattern_t *hc = cairo_pattern_create_radial(0, 0, 1, 0, 0, 26);
+        cairo_pattern_add_color_stop_rgba(hc, 0.0, 0.537, 0.706, 0.980, 0.55);
+        cairo_pattern_add_color_stop_rgba(hc, 1.0, 0.537, 0.706, 0.980, 0.0);
+        cairo_set_source(cr, hc);
+        cairo_rectangle(cr, 0, 0, 28, h);
+        cairo_fill(cr);
+        cairo_pattern_destroy(hc);
+    }
     double lx = 8.0;
     app->r_brand = (Rect){ lx, 3, 90, 21 };
     draw_hover_pill(cr, app, app->r_brand);
@@ -2359,12 +2370,42 @@ static gboolean on_scroll(GtkWidget *w, GdkEventScroll *ev, gpointer data) {
     return TRUE;
 }
 
+static void maybe_trigger_hot_corner(PanelApp *app, double x, double y) {
+    if (x <= 14.0 && y <= 12.0) {
+        if (!app->hot_corner_latched) {
+            gint64 now = g_get_monotonic_time();
+            app->hot_corner_latched = 1;
+            if ((now - app->hot_corner_us) > 900000 &&
+                access("/tmp/.phantom-overview.pid", F_OK) != 0) {
+                app->hot_corner_us = now;
+                if (app->qs_popup && GTK_WIDGET_VISIBLE(app->qs_popup)) gtk_widget_hide(app->qs_popup);
+                if (app->ram_popup && GTK_WIDGET_VISIBLE(app->ram_popup)) gtk_widget_hide(app->ram_popup);
+                spawn_cmd("/usr/bin/phantom-overview");
+            }
+        }
+    } else if (x > 24.0 || y > 18.0) {
+        app->hot_corner_latched = 0;
+    }
+}
+
 static gboolean on_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data) {
     (void)w;
     PanelApp *app = (PanelApp *)data;
     app->hover_x = ev->x;
     app->hover_y = ev->y;
     app->hovering = 1;
+    maybe_trigger_hot_corner(app, ev->x, ev->y);
+    gtk_widget_queue_draw(app->area);
+    return FALSE;
+}
+
+static gboolean on_enter(GtkWidget *w, GdkEventCrossing *ev, gpointer data) {
+    (void)w;
+    PanelApp *app = (PanelApp *)data;
+    app->hover_x = ev->x;
+    app->hover_y = ev->y;
+    app->hovering = 1;
+    maybe_trigger_hot_corner(app, ev->x, ev->y);
     gtk_widget_queue_draw(app->area);
     return FALSE;
 }
@@ -2374,6 +2415,7 @@ static gboolean on_leave(GtkWidget *w, GdkEventCrossing *ev, gpointer data) {
     (void)ev;
     PanelApp *app = (PanelApp *)data;
     app->hovering = 0;
+    app->hot_corner_latched = 0;
     gtk_widget_queue_draw(app->area);
     return FALSE;
 }
@@ -2455,11 +2497,12 @@ int main(int argc, char *argv[]) {
     app.area = gtk_drawing_area_new();
     gtk_widget_add_events(app.area,
         GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK |
-        GDK_LEAVE_NOTIFY_MASK | GDK_SCROLL_MASK);
+        GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK | GDK_SCROLL_MASK);
     g_signal_connect(app.area, "expose-event", G_CALLBACK(on_expose), &app);
     g_signal_connect(app.area, "button-press-event", G_CALLBACK(on_button_press), &app);
     g_signal_connect(app.area, "scroll-event", G_CALLBACK(on_scroll), &app);
     g_signal_connect(app.area, "motion-notify-event", G_CALLBACK(on_motion), &app);
+    g_signal_connect(app.area, "enter-notify-event", G_CALLBACK(on_enter), &app);
     g_signal_connect(app.area, "leave-notify-event", G_CALLBACK(on_leave), &app);
     gtk_container_add(GTK_CONTAINER(app.window), app.area);
 
