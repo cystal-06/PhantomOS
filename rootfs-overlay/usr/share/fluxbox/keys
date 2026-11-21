@@ -145,5 +145,5 @@ Control Mod4 F12 :TakeToWorkspace 12
 Mod4 space :Exec /usr/bin/phantom-overview
 Mod4 a :Exec /usr/bin/phantom-overview
 Control Escape :Exec /usr/bin/phantom-overview
-Control Mod1 t :Exec xterm -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244"
+Control Mod1 t :Exec xterm -u8 -ls -bg "#141724" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244"
 Mod4 e :Exec pcmanfm

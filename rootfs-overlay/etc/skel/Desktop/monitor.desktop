@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=System Monitor
-Comment=Real-time CPU, RAM, Network & Process Monitor
-Exec=/usr/bin/phantom-monitor
-Icon=applications-system
-Terminal=false
-Categories=System;Monitor;

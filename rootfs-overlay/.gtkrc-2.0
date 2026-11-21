@@ -1,54 +1,78 @@
 gtk-theme-name = "PhantomDark"
-gtk-icon-theme-name = "Adwaita"
+gtk-icon-theme-name = "PhantomGNOME"
 gtk-font-name = "Adwaita Sans 10"
 gtk-cursor-theme-name = "Adwaita"
-gtk-toolbar-style = GTK_TOOLBAR_BOTH_HORIZ
+gtk-toolbar-style = GTK_TOOLBAR_ICONS
 gtk-toolbar-icon-size = GTK_ICON_SIZE_SMALL_TOOLBAR
-gtk-button-images = 1
+gtk-button-images = 0
 gtk-menu-images = 1
 gtk-enable-event-sounds = 0
 gtk-enable-input-feedback-sounds = 0
+gtk-double-click-time = 500
+gtk-double-click-distance = 14
 gtk-xft-antialias = 1
 gtk-xft-hinting = 1
 gtk-xft-hintstyle = "hintslight"
 gtk-xft-rgba = "rgb"
 
-gtk-color-scheme = "base_color:#181825\nbg_color:#1e1e2e\ntooltip_bg_color:#11111b\nselected_bg_color:#89b4fa\ntext_color:#cdd6f4\nfg_color:#cdd6f4\ntooltip_fg_color:#cdd6f4\nselected_fg_color:#11111b"
+gtk-color-scheme = "base_color:#151826\nbg_color:#1b1e2e\ntooltip_bg_color:#121420\nselected_bg_color:#3b6cc4\ntext_color:#e2e8f0\nfg_color:#e2e8f0\ntooltip_fg_color:#e2e8f0\nselected_fg_color:#ffffff"
 
-style "default" {
-  xthickness = 2
-  ythickness = 2
+style "adwaita-flat" {
+  xthickness = 5
+  ythickness = 4
 
   GtkWidget::focus-line-width = 1
   GtkButton::default-border = { 0, 0, 0, 0 }
+  GtkButton::inner-border = { 10, 10, 5, 5 }
   GtkRange::trough-border = 0
-  GtkPaned::handle-size = 6
-  GtkRange::slider-width = 15
-  GtkRange::stepper-size = 15
-  GtkScrollbar::min-slider-length = 30
+  GtkRange::slider-width = 6
+  GtkRange::stepper-size = 0
+  GtkScrollbar::has-backward-stepper = 0
+  GtkScrollbar::has-forward-stepper = 0
+  GtkScrollbar::min-slider-length = 36
+  GtkScrolledWindow::scrollbar-spacing = 2
+  GtkPaned::handle-size = 4
+  GtkMenuBar::shadow-type = GTK_SHADOW_NONE
+  GtkToolbar::shadow-type = GTK_SHADOW_NONE
+  GtkStatusbar::shadow-type = GTK_SHADOW_NONE
+  GtkMenu::horizontal-padding = 4
+  GtkMenu::vertical-padding = 6
+  GtkMenuItem::horizontal-padding = 10
 
-  bg[NORMAL]        = "#1e1e2e"
-  bg[PRELIGHT]      = "#313244"
-  bg[ACTIVE]        = "#181825"
-  bg[SELECTED]      = "#89b4fa"
-  bg[INSENSITIVE]   = "#181825"
+  bg[NORMAL]        = "#1b1e2e"
+  bg[PRELIGHT]      = "#292f47"
+  bg[ACTIVE]        = "#141724"
+  bg[SELECTED]      = "#3b6cc4"
+  bg[INSENSITIVE]   = "#161826"
 
-  fg[NORMAL]        = "#cdd6f4"
+  fg[NORMAL]        = "#e2e8f0"
   fg[PRELIGHT]      = "#ffffff"
-  fg[ACTIVE]        = "#cdd6f4"
-  fg[SELECTED]      = "#11111b"
-  fg[INSENSITIVE]   = "#585b70"
+  fg[ACTIVE]        = "#e2e8f0"
+  fg[SELECTED]      = "#ffffff"
+  fg[INSENSITIVE]   = "#64748b"
 
-  base[NORMAL]      = "#181825"
-  base[PRELIGHT]    = "#313244"
-  base[ACTIVE]      = "#1e1e2e"
-  base[SELECTED]    = "#89b4fa"
-  base[INSENSITIVE] = "#181825"
+  base[NORMAL]      = "#151826"
+  base[PRELIGHT]    = "#292f47"
+  base[ACTIVE]      = "#22273c"
+  base[SELECTED]    = "#3b6cc4"
+  base[INSENSITIVE] = "#151826"
 
-  text[NORMAL]      = "#cdd6f4"
+  text[NORMAL]      = "#e2e8f0"
   text[PRELIGHT]    = "#ffffff"
-  text[ACTIVE]      = "#cdd6f4"
-  text[SELECTED]    = "#11111b"
-  text[INSENSITIVE] = "#585b70"
+  text[ACTIVE]      = "#e2e8f0"
+  text[SELECTED]    = "#ffffff"
+  text[INSENSITIVE] = "#64748b"
 }
-class "GtkWidget" style "default"
+class "GtkWidget" style "adwaita-flat"
+
+style "adwaita-menu" {
+  xthickness = 6
+  ythickness = 4
+  bg[NORMAL]   = "#181b2a"
+  bg[PRELIGHT] = "#2e3552"
+  bg[SELECTED] = "#3b6cc4"
+  fg[NORMAL]   = "#e2e8f0"
+  fg[PRELIGHT] = "#ffffff"
+}
+widget_class "*<GtkMenu>*" style "adwaita-menu"
+widget_class "*<GtkMenuItem>*" style "adwaita-menu"

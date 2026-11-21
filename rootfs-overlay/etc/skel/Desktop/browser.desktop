@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Web Browser
-Comment=Firefox ESR (Low-RAM Stateless Profile)
-Exec=/usr/bin/firefox
-Icon=web-browser
-Terminal=false
-Categories=Network;WebBrowser;

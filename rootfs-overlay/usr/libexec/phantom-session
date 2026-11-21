@@ -58,9 +58,4 @@ if [ -x /usr/bin/phantom-gestures ]; then
     GESTURES_PID=$!
 fi
 
-/usr/bin/xterm -u8 -ls \
-    -bg "#181825" -fg "#cdd6f4" -cr "#89b4fa" -bd "#313244" \
-    -geometry 92x26+64+52 -title "PhantomOS Terminal (${USER})" >/dev/null 2>&1 &
-XTERM_PID=$!
-
 wait "${FB_PID}"

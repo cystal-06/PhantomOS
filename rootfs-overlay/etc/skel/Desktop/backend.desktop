@@ -1,6 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Backend Lab
-Exec=xterm -u8 -bg "#181825" -fg "#cdd6f4" -title "Backend Lab" -e /opt/tui-menu/menu.sh
-Icon=system-software-install
-Terminal=false

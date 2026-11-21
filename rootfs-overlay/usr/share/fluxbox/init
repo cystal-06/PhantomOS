@@ -9,15 +9,15 @@ session.screen0.toolbar.widthPercent: 100
 session.screen0.toolbar.tools: workspacename, prevworkspace, nextworkspace, iconbar, clock
 session.screen0.strftimeFormat: %H:%M  |  %a %d/%m
 session.screen0.workspaceNames: Workspace 1, Workspace 2, Workspace 3, Workspace 4
-session.screen0.iconbar.mode: {static groups} (workspace)
-session.screen0.iconbar.alignment: Left
-session.screen0.iconbar.iconWidth: 180
-session.screen0.iconbar.iconTextPadding: 14
-session.screen0.iconbar.usePixmap: false
+session.screen0.titlebar.left:
+session.screen0.titlebar.right: Minimize Maximize Close
+session.screen0.windowPlacement: RowSmartPlacement
+session.screen0.rowPlacementDirection: LeftToRight
 session.screen0.focusModel: ClickToFocus
 session.screen0.window.focusModel: ClickToFocus
-session.screen0.edgeSnapThreshold: 10
-session.doubleClickInterval: 450
+session.screen0.edgeSnapThreshold: 12
 session.screen0.opaqueMove: True
 session.screen0.fullMaximization: False
 session.screen0.showwindowposition: False
+session.doubleClickInterval: 500
+session.screen0.tabs.usePixmap: false

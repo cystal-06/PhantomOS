@@ -409,11 +409,11 @@ static void init_items(DockApp *app) {
     } defs[] = {
         { "Files",          "pcmanfm",     "system-file-manager",     "/usr/bin/pcmanfm" },
         { "Web Browser",    "Firefox",     "web-browser",             "/usr/bin/firefox" },
-        { "Terminal",       "Terminal",    "utilities-terminal",      "xterm -u8 -ls -bg \"#181825\" -fg \"#cdd6f4\" -cr \"#89b4fa\" -bd \"#313244\"" },
+        { "Terminal",       "Terminal",    "utilities-terminal",      "xterm -u8 -ls -bg \"#141724\" -fg \"#e2e8f0\" -cr \"#89b4fa\" -geometry 96x28 -title \"Terminal\"" },
         { "Editor",         "Leafpad",     "accessories-text-editor", "/usr/bin/leafpad" },
         { "System Monitor", "Monitor",     "applications-system",     "/usr/bin/phantom-monitor" },
         { "Settings",       "Settings",    "preferences-system",      "/usr/bin/phantom-settings" },
-        { "Backend Lab",    "Backend Lab", "system-software-install", "xterm -u8 -bg \"#181825\" -fg \"#cdd6f4\" -title \"Backend Lab\" -e /opt/tui-menu/menu.sh" },
+        { "Backend Lab",    "Backend Lab", "system-software-install", "xterm -u8 -bg \"#141724\" -fg \"#e2e8f0\" -geometry 104x30 -title \"Backend Lab\" -e /opt/tui-menu/menu.sh" },
     };
     app->item_count = (int)(sizeof(defs) / sizeof(defs[0]));
     for (int i = 0; i < app->item_count && i < MAX_ITEMS; i++) {

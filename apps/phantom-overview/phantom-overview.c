@@ -357,7 +357,7 @@ static void init_apps(OverviewApp *app) {
     } defs[] = {
         { "Files",          "File Manager",       "apps", "system-file-manager",     "/usr/bin/pcmanfm", 1 },
         { "Web Browser",    "Firefox ESR",        "apps", "web-browser",             "/usr/bin/firefox", 1 },
-        { "Terminal",       "XTerm UTF-8 Shell",  "apps", "utilities-terminal",      "xterm -u8 -ls -bg \"#181825\" -fg \"#cdd6f4\" -cr \"#89b4fa\" -bd \"#313244\"", 1 },
+        { "Terminal",       "XTerm UTF-8 Shell",  "apps", "utilities-terminal",      "xterm -u8 -ls -bg \"#141724\" -fg \"#e2e8f0\" -cr \"#89b4fa\" -geometry 96x28 -title \"Terminal\"", 1 },
         { "Editor",         "Leafpad Notes",      "apps", "accessories-text-editor", "/usr/bin/leafpad", 1 },
         { "System Monitor", "CPU, RAM & ZRAM",    "apps", "applications-system",     "/usr/bin/phantom-monitor", 1 },
         { "Settings",       "System & Wi-Fi",     "apps", "preferences-system",      "/usr/bin/phantom-settings", 1 },
