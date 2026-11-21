@@ -65,6 +65,8 @@ typedef struct {
 
     double hx, hy;
     int hovering;
+    double anim_t;
+    guint anim_id;
 
     /* Interactive Hitboxes */
     Rect r_card_phantom;
@@ -326,6 +328,33 @@ static void layout_entries(LoginApp *app) {
     }
 }
 
+static gboolean on_login_anim_tick(gpointer data) {
+    LoginApp *app = (LoginApp *)data;
+    if (app->anim_t < 1.0) {
+        app->anim_t += 0.095;
+        if (app->anim_t >= 1.0) {
+            app->anim_t = 1.0;
+        }
+        if (app->stage == 1 && app->anim_t >= 0.72 && !GTK_WIDGET_VISIBLE(app->pass_entry)) {
+            layout_entries(app);
+            gtk_widget_show(app->user_entry);
+            gtk_widget_show(app->pass_entry);
+            gtk_widget_grab_focus((app->selected_user_idx == 2) ? app->user_entry : app->pass_entry);
+        }
+        gtk_widget_queue_draw(app->window);
+        if (app->anim_t < 1.0) return TRUE;
+    }
+    app->anim_id = 0;
+    return FALSE;
+}
+
+static void start_login_anim(LoginApp *app) {
+    app->anim_t = 0.08;
+    if (!app->anim_id) {
+        app->anim_id = g_timeout_add(16, on_login_anim_tick, app);
+    }
+}
+
 static void enter_stage(LoginApp *app, int stage, int user_idx) {
     app->stage = stage;
     app->selected_user_idx = user_idx;
@@ -346,11 +375,10 @@ static void enter_stage(LoginApp *app, int stage, int user_idx) {
             gtk_entry_set_text(GTK_ENTRY(app->user_entry), "");
         }
         gtk_entry_set_text(GTK_ENTRY(app->pass_entry), "");
-        layout_entries(app);
-        gtk_widget_show(app->user_entry);
-        gtk_widget_show(app->pass_entry);
-        gtk_widget_grab_focus((user_idx == 2) ? app->user_entry : app->pass_entry);
+        gtk_widget_hide(app->user_entry);
+        gtk_widget_hide(app->pass_entry);
     }
+    start_login_anim(app);
     gtk_widget_queue_draw(app->window);
 }
 
@@ -432,6 +460,13 @@ static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpoin
         draw_text(cr, pmx + 22, pmy + 63, "Power Off", 0.953, 0.545, 0.659, 1, 10.5);
     } else {
         app->r_reboot_btn = app->r_poweroff_btn = (Rect){0,0,0,0};
+    }
+
+    double at = app->anim_t > 0.0 ? app->anim_t : 1.0;
+    double ae = 1.0 - pow(1.0 - at, 3.0);
+    if (ae < 0.999) {
+        cairo_push_group(cr);
+        cairo_translate(cr, 0.0, (1.0 - ae) * 16.0);
     }
 
     if (app->stage == 0) {
@@ -616,6 +651,11 @@ static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpoin
                            app->is_error ? 0.545 : 0.620,
                            app->is_error ? 0.659 : 0.745,
                            app->is_error, 9.8);
+    }
+
+    if (ae < 0.999) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, 0.15 + 0.85 * ae);
     }
 
     /* Minimal Bottom Bar */

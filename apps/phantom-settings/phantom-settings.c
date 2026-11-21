@@ -104,6 +104,12 @@ typedef struct {
     int drag_slider; /* 0=none, 1=bright, 2=vol, 3=mouse */
     gint64 last_cmd_us;
 
+    /* 60fps UI Animations */
+    double page_anim_t;
+    double nav_anim_y;
+    double nav_target_y;
+    guint anim_id;
+
     Rect r_search_btn;
     Rect r_about_btn;
     Rect r_nav[PAGE_COUNT];
@@ -1067,9 +1073,12 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     }
 
     /* Grouped Sidebar Navigation */
+    double active_ny = -1.0;
+    Rect nav_rects[PAGE_COUNT];
     for (int i = 0; i < PAGE_COUNT; i++) {
         if (!nav_matches(PAGE_LABELS[i], app->search_query)) {
             app->r_nav[i] = (Rect){0,0,0,0};
+            nav_rects[i] = (Rect){0,0,0,0};
             continue;
         }
         if (!app->search_open && (i == PAGE_DISPLAYS || i == PAGE_MULTITASK || i == PAGE_APPS)) {
@@ -1081,28 +1090,52 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         }
         Rect nr = { 10, ny, SIDEBAR_W - 20, 36 };
         app->r_nav[i] = nr;
+        nav_rects[i] = nr;
+        if (app->page == (SettingsPage)i) active_ny = nr.y;
+        ny += 40.0;
+    }
+
+    if (active_ny >= 0.0) {
+        app->nav_target_y = active_ny;
+        if (app->nav_anim_y <= 0.0) app->nav_anim_y = active_ny;
+        rounded_rect(cr, 10, app->nav_anim_y, SIDEBAR_W - 20, 36, 8.0);
+        cairo_set_source_rgb(cr, 0.180, 0.204, 0.286);
+        cairo_fill(cr);
+    }
+
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        Rect nr = nav_rects[i];
+        if (nr.w <= 0) continue;
         int active = (app->page == (SettingsPage)i);
         int hov = app->hovering && pt_in_rect(app->hx, app->hy, nr);
-        if (active || hov) {
+        if (hov && !active) {
             rounded_rect(cr, nr.x, nr.y, nr.w, nr.h, 8.0);
-            if (active) cairo_set_source_rgb(cr, 0.180, 0.204, 0.286);
-            else cairo_set_source_rgb(cr, 0.141, 0.157, 0.220);
+            cairo_set_source_rgb(cr, 0.141, 0.157, 0.220);
             cairo_fill(cr);
         }
         draw_nav_icon(cr, (SettingsPage)i, nr.x + 12, nr.y + 10, active);
         draw_text(cr, nr.x + 38, nr.y + 22.5, PAGE_LABELS[i],
                   active ? 0.94 : 0.80, active ? 0.96 : 0.84, active ? 0.99 : 0.92,
                   active, 10.8);
-        ny += 40.0;
     }
 
-    /* Content Area */
+    /* Content Area (with smooth 60fps slide & fade on tab switch) */
     double area_w = w - SIDEBAR_W;
     double cw = area_w - 64.0;
     if (cw > 520.0) cw = 520.0;
     if (cw < 320.0) cw = area_w - 24.0;
     double cx = SIDEBAR_W + (area_w - cw) * 0.5;
     double y = 38.0;
+
+    double pt = (app->page_anim_t > 0.0) ? app->page_anim_t : 1.0;
+    double pe = 1.0 - pow(1.0 - pt, 3.0);
+    if (pe < 0.999) {
+        cairo_save(cr);
+        cairo_rectangle(cr, SIDEBAR_W + 1, 0, w - SIDEBAR_W - 1, h);
+        cairo_clip(cr);
+        cairo_push_group(cr);
+        cairo_translate(cr, 0.0, (1.0 - pe) * 14.0);
+    }
 
     draw_text(cr, cx, y, PAGE_LABELS[app->page], 0.93, 0.95, 0.99, 1, 16.5);
     y += 28.0;
@@ -1420,8 +1453,44 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         draw_text(cr, SIDEBAR_W + 24, h - 14, app->toast, 0.651, 0.890, 0.631, 1, 9.8);
     }
 
+    if (pe < 0.999) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, 0.15 + 0.85 * pe);
+        cairo_restore(cr);
+    }
+
     cairo_destroy(cr);
     return FALSE;
+}
+
+static gboolean on_settings_anim_tick(gpointer data) {
+    SettingsApp *app = (SettingsApp *)data;
+    int active = 0;
+    if (app->page_anim_t < 1.0) {
+        app->page_anim_t += 0.105;
+        if (app->page_anim_t > 1.0) app->page_anim_t = 1.0;
+        active = 1;
+    }
+    if (app->nav_target_y > 0.0 && fabs(app->nav_anim_y - app->nav_target_y) > 0.6) {
+        app->nav_anim_y += (app->nav_target_y - app->nav_anim_y) * 0.34;
+        active = 1;
+    } else if (app->nav_target_y > 0.0 && app->nav_anim_y != app->nav_target_y) {
+        app->nav_anim_y = app->nav_target_y;
+        active = 1;
+    }
+    gtk_widget_queue_draw(app->window);
+    if (!active) {
+        app->anim_id = 0;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static void start_settings_anim(SettingsApp *app) {
+    app->page_anim_t = 0.08;
+    if (!app->anim_id) {
+        app->anim_id = g_timeout_add(16, on_settings_anim_tick, app);
+    }
 }
 
 static void update_slider_val(SettingsApp *app, int which, double x) {
@@ -1478,18 +1547,24 @@ static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
     }
 
     if (pt_in_rect(ev->x, ev->y, app->r_about_btn)) {
-        app->page = PAGE_SYSTEM;
-        probe_system_info(app);
+        if (app->page != PAGE_SYSTEM) {
+            app->page = PAGE_SYSTEM;
+            probe_system_info(app);
+            start_settings_anim(app);
+        }
         gtk_widget_queue_draw(app->window);
         return TRUE;
     }
 
     for (int i = 0; i < PAGE_COUNT; i++) {
         if (pt_in_rect(ev->x, ev->y, app->r_nav[i])) {
-            app->page = (SettingsPage)i;
-            app->wifi_pass_open = 0;
-            gtk_widget_hide(app->wifi_pass_entry);
-            probe_all(app);
+            if (app->page != (SettingsPage)i) {
+                app->page = (SettingsPage)i;
+                app->wifi_pass_open = 0;
+                gtk_widget_hide(app->wifi_pass_entry);
+                probe_all(app);
+                start_settings_anim(app);
+            }
             gtk_widget_queue_draw(app->window);
             return TRUE;
         }
@@ -1714,6 +1789,7 @@ int main(int argc, char *argv[]) {
 
     gtk_widget_show(app.fixed);
     gtk_widget_show(app.window);
+    start_settings_anim(&app);
     gtk_main();
     return 0;
 }

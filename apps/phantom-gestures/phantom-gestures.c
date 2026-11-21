@@ -118,9 +118,31 @@ static void set_active_maximized(Display *dpy, int maximize) {
     XFlush(dpy);
 }
 
+static void trigger_overview(int open_only) {
+    FILE *fp = fopen("/tmp/.phantom-overview.pid", "r");
+    if (fp) {
+        int pid = 0;
+        if (fscanf(fp, "%d", &pid) == 1 && pid > 1) {
+            if (kill(pid, SIGUSR1) == 0) {
+                fclose(fp);
+                return;
+            }
+        }
+        fclose(fp);
+    }
+    if (!open_only) return;
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        execl("/usr/bin/phantom-overview", "phantom-overview", (char *)NULL);
+        _exit(127);
+    }
+}
+
 int main(void) {
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
+    signal(SIGCHLD, SIG_IGN);
 
     Display *dpy = XOpenDisplay(NULL);
     if (!dpy) {
@@ -198,7 +220,22 @@ int main(void) {
                     if (ax >= SWIPE_THRESHOLD && ax > ay * AXIS_RATIO) {
                         switch_workspace(dpy, (accum_dx < 0.0) ? 1 : -1);
                     } else if (ay >= SWIPE_THRESHOLD && ay > ax * AXIS_RATIO) {
-                        set_active_maximized(dpy, (accum_dy < 0.0) ? 1 : 0);
+                        if (accum_dy < 0.0) {
+                            /* 3-finger swipe UP -> open / toggle GNOME Overview Menu */
+                            trigger_overview(1);
+                        } else {
+                            /* 3-finger swipe DOWN -> close Overview if open, else unmaximize window */
+                            FILE *fp = fopen("/tmp/.phantom-overview.pid", "r");
+                            int closed = 0;
+                            if (fp) {
+                                int pid = 0;
+                                if (fscanf(fp, "%d", &pid) == 1 && pid > 1 && kill(pid, SIGUSR1) == 0) {
+                                    closed = 1;
+                                }
+                                fclose(fp);
+                            }
+                            if (!closed) set_active_maximized(dpy, 0);
+                        }
                     }
                 }
                 active_fingers = 0;

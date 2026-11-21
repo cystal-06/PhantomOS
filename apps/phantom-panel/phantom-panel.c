@@ -174,7 +174,11 @@ typedef struct {
     double hover_x;
     double hover_y;
     int hovering;
+    Rect r_brand;
     Rect r_ws;
+    double qs_anim_t;
+    double ram_anim_t;
+    guint anim_id;
     Rect r_term;
     Rect r_browser;
     Rect r_files;
@@ -1261,10 +1265,16 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     cairo_line_to(cr, w, h - 0.5);
     cairo_stroke(cr);
 
-    /* LEFT SIDE: Brand + Workspace + Quick App Icons */
-    double lx = 10.0;
-    draw_text(cr, lx, 18.5, "PhantomOS", 0.537, 0.706, 0.980, 1, 11.5);
-    lx += 82.0;
+    /* LEFT SIDE: Activities Overview Pill + Workspace + Quick App Icons */
+    double lx = 8.0;
+    app->r_brand = (Rect){ lx, 3, 90, 21 };
+    draw_hover_pill(cr, app, app->r_brand);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, lx + 9, 13.5, 3.0, 0, 2.0 * G_PI);
+    cairo_set_source_rgb(cr, 0.537, 0.706, 0.980);
+    cairo_fill(cr);
+    draw_text(cr, lx + 16, 18.0, "PhantomOS", 0.537, 0.706, 0.980, 1, 11.0);
+    lx += 94.0;
 
     char ws_txt[64];
     snprintf(ws_txt, sizeof(ws_txt), "WS %ld/%ld", app->cur_ws + 1, app->num_ws > 0 ? app->num_ws : 4);
@@ -1482,12 +1492,49 @@ static void draw_hbar(cairo_t *cr, double x, double y, double w, double h, doubl
     }
 }
 
+static gboolean panel_anim_tick(gpointer data) {
+    PanelApp *app = (PanelApp *)data;
+    int active = 0;
+    if (app->qs_popup && GTK_WIDGET_VISIBLE(app->qs_popup) && app->qs_anim_t < 1.0) {
+        app->qs_anim_t += 0.10;
+        if (app->qs_anim_t > 1.0) app->qs_anim_t = 1.0;
+        gtk_widget_queue_draw(app->qs_area);
+        active = 1;
+    }
+    if (app->ram_popup && GTK_WIDGET_VISIBLE(app->ram_popup) && app->ram_anim_t < 1.0) {
+        app->ram_anim_t += 0.10;
+        if (app->ram_anim_t > 1.0) app->ram_anim_t = 1.0;
+        gtk_widget_queue_draw(app->ram_popup_area);
+        active = 1;
+    }
+    if (!active) {
+        app->anim_id = 0;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static void start_panel_anim(PanelApp *app) {
+    if (!app->anim_id) {
+        app->anim_id = g_timeout_add(16, panel_anim_tick, app);
+    }
+}
+
 static gboolean on_ram_popup_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
     (void)event;
     PanelApp *app = (PanelApp *)data;
     cairo_t *cr = gdk_cairo_create(widget->window);
     double w = (double)widget->allocation.width;
     double h = (double)widget->allocation.height;
+
+    double rt = app->ram_anim_t > 0.0 ? app->ram_anim_t : 1.0;
+    double re = 1.0 - pow(1.0 - rt, 3.0);
+    if (re < 0.999) {
+        cairo_set_source_rgb(cr, 0.09, 0.095, 0.14);
+        cairo_paint(cr);
+        cairo_push_group(cr);
+        cairo_translate(cr, 0.0, -(1.0 - re) * 12.0);
+    }
 
     rounded_rect(cr, 0.5, 0.5, w - 1.0, h - 1.0, 8.0);
     cairo_set_source_rgb(cr, 0.118, 0.118, 0.180);
@@ -1577,6 +1624,11 @@ static gboolean on_ram_popup_expose(GtkWidget *widget, GdkEventExpose *event, gp
     cairo_stroke(cr);
     draw_text(cr, bx + 16.0, y + 16.0, "System Monitor", 0.804, 0.839, 0.957, 1, 10.0);
 
+    if (re < 0.999) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, 0.15 + 0.85 * re);
+    }
+
     cairo_destroy(cr);
     return TRUE;
 }
@@ -1661,10 +1713,12 @@ static void toggle_ram_popup(PanelApp *app) {
     int px = (int)(app->r_ram.x + (app->r_ram.w - pw) * 0.5);
     if (px < 6) px = 6;
     if (px + pw > app->width - 6) px = app->width - pw - 6;
+    app->ram_anim_t = 0.05;
     gtk_window_move(GTK_WINDOW(app->ram_popup), px, PANEL_HEIGHT + 2);
     gtk_widget_show_all(app->ram_popup);
     gtk_window_move(GTK_WINDOW(app->ram_popup), px, PANEL_HEIGHT + 2);
     gtk_window_present(GTK_WINDOW(app->ram_popup));
+    start_panel_anim(app);
     gtk_widget_queue_draw(app->ram_popup_area);
 }
 
@@ -1776,6 +1830,15 @@ static gboolean on_qs_expose(GtkWidget *widget, GdkEventExpose *event, gpointer 
     cairo_t *cr = gdk_cairo_create(widget->window);
     double w = (double)widget->allocation.width;
     double h = (double)widget->allocation.height;
+
+    double qt = app->qs_anim_t > 0.0 ? app->qs_anim_t : 1.0;
+    double qe = 1.0 - pow(1.0 - qt, 3.0);
+    if (qe < 0.999) {
+        cairo_set_source_rgb(cr, 0.09, 0.095, 0.14);
+        cairo_paint(cr);
+        cairo_push_group(cr);
+        cairo_translate(cr, 0.0, -(1.0 - qe) * 14.0);
+    }
 
     rounded_rect(cr, 0.5, 0.5, w - 1.0, h - 1.0, 14.0);
     cairo_set_source_rgb(cr, 0.110, 0.114, 0.165);
@@ -1958,6 +2021,11 @@ static gboolean on_qs_expose(GtkWidget *widget, GdkEventExpose *event, gpointer 
         draw_text(cr, 18, 114, "Enter WPA/WPA2/WPA3 passphrase below:", 0.729, 0.761, 0.871, 0, 9.5);
     }
 
+    if (qe < 0.999) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, 0.15 + 0.85 * qe);
+    }
+
     cairo_destroy(cr);
     return TRUE;
 }
@@ -1965,6 +2033,8 @@ static gboolean on_qs_expose(GtkWidget *widget, GdkEventExpose *event, gpointer 
 static void qs_set_page(PanelApp *app, int page) {
     app->qs_page = page;
     app->qs_power_confirm = 0;
+    app->qs_anim_t = 0.05;
+    start_panel_anim(app);
     if (app->qs_pass_box) {
         if (page == 2) {
             gtk_widget_set_size_request(app->qs_area, 312, 128);
@@ -2231,12 +2301,14 @@ static void toggle_qs_popup(PanelApp *app) {
     }
 
     qs_set_page(app, 0);
+    app->qs_anim_t = 0.05;
     int px = app->width - pw - 6;
     if (px < 6) px = 6;
     gtk_window_move(GTK_WINDOW(app->qs_popup), px, PANEL_HEIGHT + 2);
     gtk_widget_show(app->qs_popup);
     gtk_window_move(GTK_WINDOW(app->qs_popup), px, PANEL_HEIGHT + 2);
     gtk_window_present(GTK_WINDOW(app->qs_popup));
+    start_panel_anim(app);
     gtk_widget_queue_draw(app->qs_area);
 }
 
@@ -2245,7 +2317,9 @@ static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
     PanelApp *app = (PanelApp *)data;
     if (ev->button != 1) return FALSE;
 
-    if (pt_in_rect(ev->x, ev->y, app->r_ws)) {
+    if (pt_in_rect(ev->x, ev->y, app->r_brand)) {
+        spawn_cmd("/usr/bin/phantom-overview");
+    } else if (pt_in_rect(ev->x, ev->y, app->r_ws)) {
         switch_workspace_delta(1);
     } else if (pt_in_rect(ev->x, ev->y, app->r_term)) {
         spawn_cmd("xterm -u8 -ls -bg \"#181825\" -fg \"#cdd6f4\" -cr \"#89b4fa\" -bd \"#313244\"");
