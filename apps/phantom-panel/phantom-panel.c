@@ -2478,7 +2478,7 @@ int main(int argc, char *argv[]) {
     memset(&app, 0, sizeof(app));
     GdkScreen *scr = gdk_screen_get_default();
     app.width = gdk_screen_get_width(scr);
-    if (app.width < 800) app.width = 1280;
+    if (app.width < 800) app.width = 1920;
     app.height = PANEL_HEIGHT;
 
     app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);

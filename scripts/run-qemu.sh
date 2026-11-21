@@ -27,7 +27,7 @@ Boot Mode:
   --rw, --dev    Boot read-write rootfs.ext4 directly
 
 Display Mode:
-  --desktop      Start VirtIO GPU 1280x800 + Fluxbox desktop (default)
+  --desktop      Start VirtIO GPU 1920x1080 + Fluxbox desktop (default)
   --headless     Serial console only (-nographic), skips Xorg/Fluxbox
   --no-browser   Do not attach browser.squashfs addon in desktop mode
 
@@ -104,7 +104,7 @@ if [ "${UI_MODE}" = "headless" ]; then
     APPEND_OPTS+=("console=ttyS0" "headless")
 else
     QEMU_ARGS+=(
-        -device "virtio-vga,xres=1280,yres=800"
+        -device "virtio-vga,xres=1920,yres=1080"
         -device virtio-keyboard-pci
         -device qemu-xhci
         -device usb-tablet
@@ -117,7 +117,7 @@ else
     else
         QEMU_ARGS+=(-audiodev "none,id=snd0" -device ich9-intel-hda -device "hda-duplex,audiodev=snd0")
     fi
-    APPEND_OPTS+=("video=1280x800")
+    APPEND_OPTS+=("video=1920x1080")
 fi
 
 if [ "${DEBUG_MODE}" -eq 1 ]; then

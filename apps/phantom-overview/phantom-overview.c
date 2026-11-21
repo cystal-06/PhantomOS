@@ -492,7 +492,8 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     double ws_gap = 18.0;
     double tot_ws_w = nws * ws_w + (nws - 1) * ws_gap;
     double ws_x0 = (w - tot_ws_w) * 0.5;
-    double ws_y = 98.0 + (1.0 - e) * -20.0;
+    double extra_y = (h > 860) ? (h - 800) * 0.28 : 0.0;
+    double ws_y = 98.0 + extra_y + (1.0 - e) * -20.0;
     double ws_scale = 0.86 + 0.14 * e;
 
     for (int i = 0; i < nws; i++) {
@@ -572,7 +573,7 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     double cell_h = 122.0;
     double grid_w = cols * cell_w;
     double grid_x0 = (w - grid_w) * 0.5;
-    double grid_y0 = 246.0;
+    double grid_y0 = 246.0 + ((h > 860) ? (h - 800) * 0.28 : 0.0);
 
     app->r_app_n = 0;
     int p = app->target_page;
@@ -991,8 +992,8 @@ int main(int argc, char *argv[]) {
     GdkScreen *scr = gdk_screen_get_default();
     app.scr_w = gdk_screen_get_width(scr);
     app.scr_h = gdk_screen_get_height(scr);
-    if (app.scr_w < 800) app.scr_w = 1280;
-    if (app.scr_h < 600) app.scr_h = 800;
+    if (app.scr_w < 800) app.scr_w = 1920;
+    if (app.scr_h < 600) app.scr_h = 1080;
 
     capture_blurred_desktop(&app);
     probe_x11_state(&app);

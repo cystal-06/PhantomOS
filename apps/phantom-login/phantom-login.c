@@ -1027,8 +1027,8 @@ int main(int argc, char *argv[]) {
     GdkScreen *scr = gdk_screen_get_default();
     app.scr_w = gdk_screen_get_width(scr);
     app.scr_h = gdk_screen_get_height(scr);
-    if (app.scr_w < 800) app.scr_w = 1280;
-    if (app.scr_h < 600) app.scr_h = 800;
+    if (app.scr_w < 800) app.scr_w = 1920;
+    if (app.scr_h < 600) app.scr_h = 1080;
 
     app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(app.window), PHANTOM_LOGIN_TITLE);
