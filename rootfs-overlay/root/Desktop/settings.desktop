@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Configure Wi-Fi, Network, Displays, Power, Appearance & System
+Exec=/usr/bin/phantom-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;
