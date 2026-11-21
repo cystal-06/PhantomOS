@@ -56,7 +56,8 @@ typedef struct {
     int scr_w;
     int scr_h;
 
-    /* Animations (60fps) */
+    /* Animations (60fps+ dt-driven) */
+    gint64 last_tick_us;
     double anim_t;        /* 0.0 -> 1.0 open/close */
     int closing;          /* 1 = playing close animation before quit */
     double page_pos;      /* animated grid page offset */
@@ -300,11 +301,14 @@ static void capture_blurred_desktop(OverviewApp *app) {
     g_object_unref(p1);
     if (!p2) return;
 
-    app->blur_w = sw2;
-    app->blur_h = sh2;
-    app->blur_surf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, sw2, sh2);
+    /* Pre-scale blurred desktop ONCE into full-size image surface for 1ms 1:1 blits during animation */
+    app->blur_w = rw;
+    app->blur_h = rh;
+    app->blur_surf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, rw, rh);
     cairo_t *bcr = cairo_create(app->blur_surf);
+    cairo_scale(bcr, (double)rw / sw2, (double)rh / sh2);
     gdk_cairo_set_source_pixbuf(bcr, p2, 0, 0);
+    cairo_pattern_set_filter(cairo_get_source(bcr), CAIRO_FILTER_BILINEAR);
     cairo_paint(bcr);
     cairo_destroy(bcr);
     g_object_unref(p2);
@@ -433,8 +437,11 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
 
     double e = ease_out_cubic(app->anim_t);
 
-    /* 1. Blurred Live Desktop Background + Smooth Dimming */
-    if (app->blur_surf && app->blur_w > 0 && app->blur_h > 0) {
+    /* 1. Blurred Live Desktop Background (1:1 pre-scaled surface) + Smooth Dimming */
+    if (app->blur_surf && app->blur_w == w && app->blur_h == h) {
+        cairo_set_source_surface(cr, app->blur_surf, 0, 0);
+        cairo_paint(cr);
+    } else if (app->blur_surf && app->blur_w > 0 && app->blur_h > 0) {
         cairo_save(cr);
         cairo_scale(cr, (double)w / app->blur_w, (double)h / app->blur_h);
         cairo_set_source_surface(cr, app->blur_surf, 0, 0);
@@ -745,6 +752,12 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
 
 static gboolean on_anim_tick(gpointer data) {
     OverviewApp *app = (OverviewApp *)data;
+    gint64 now = g_get_monotonic_time();
+    double dt = (app->last_tick_us > 0) ? ((double)(now - app->last_tick_us) / 1000000.0) : (1.0 / 60.0);
+    app->last_tick_us = now;
+    if (dt < 0.004) dt = 0.004;
+    if (dt > 0.045) dt = 0.045;
+
     int dirty = 0;
 
     if (g_sig_close) {
@@ -753,11 +766,11 @@ static gboolean on_anim_tick(gpointer data) {
     }
 
     if (!app->closing && app->anim_t < 1.0) {
-        app->anim_t += 0.085; /* ~190ms open @ 60fps */
+        app->anim_t += dt / 0.18;
         if (app->anim_t > 1.0) app->anim_t = 1.0;
         dirty = 1;
     } else if (app->closing) {
-        app->anim_t -= 0.115; /* ~140ms close @ 60fps */
+        app->anim_t -= dt / 0.14;
         if (app->anim_t <= 0.0) {
             app->anim_t = 0.0;
             if (app->pending_cmd[0]) spawn_cmd(app->pending_cmd);
@@ -767,8 +780,9 @@ static gboolean on_anim_tick(gpointer data) {
         dirty = 1;
     }
 
+    double k = 1.0 - exp(-22.0 * dt);
     if (fabs(app->ws_sel_pos - (double)app->cur_ws) > 0.005) {
-        app->ws_sel_pos += ((double)app->cur_ws - app->ws_sel_pos) * 0.28;
+        app->ws_sel_pos += ((double)app->cur_ws - app->ws_sel_pos) * k;
         dirty = 1;
     } else if (app->ws_sel_pos != (double)app->cur_ws) {
         app->ws_sel_pos = (double)app->cur_ws;
@@ -778,7 +792,7 @@ static gboolean on_anim_tick(gpointer data) {
     for (int i = 0; i < app->app_count; i++) {
         double target_g = (app->hovering && app->hover_app_idx == i) ? 1.11 : 1.0;
         if (fabs(app->hover_scale[i] - target_g) > 0.004) {
-            app->hover_scale[i] += (target_g - app->hover_scale[i]) * 0.30;
+            app->hover_scale[i] += (target_g - app->hover_scale[i]) * k;
             dirty = 1;
         } else if (app->hover_scale[i] != target_g) {
             app->hover_scale[i] = target_g;
@@ -787,7 +801,7 @@ static gboolean on_anim_tick(gpointer data) {
 
         double target_d = (app->hovering && app->hover_dock_idx == i) ? 1.18 : 1.0;
         if (fabs(app->dock_scale[i] - target_d) > 0.004) {
-            app->dock_scale[i] += (target_d - app->dock_scale[i]) * 0.30;
+            app->dock_scale[i] += (target_d - app->dock_scale[i]) * k;
             dirty = 1;
         } else if (app->dock_scale[i] != target_d) {
             app->dock_scale[i] = target_d;
@@ -958,6 +972,7 @@ static gboolean on_scroll(GtkWidget *w, GdkEventScroll *ev, gpointer data) {
 static void on_realize(GtkWidget *w, gpointer data) {
     (void)data;
     if (!w || !w->window) return;
+    gdk_window_set_back_pixmap(w->window, NULL, FALSE);
     Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
     Window xid = GDK_WINDOW_XID(w->window);
     Atom a_state = XInternAtom(dpy, "_NET_WM_STATE", False);
@@ -1028,7 +1043,8 @@ int main(int argc, char *argv[]) {
     g_signal_connect(app.window, "key-press-event", G_CALLBACK(on_key_press), &app);
     g_signal_connect(app.window, "scroll-event", G_CALLBACK(on_scroll), &app);
 
-    g_timeout_add(16, on_anim_tick, &app);
+    app.last_tick_us = g_get_monotonic_time();
+    g_timeout_add_full(G_PRIORITY_HIGH, 10, on_anim_tick, &app, NULL);
 
     gtk_widget_show(app.window);
     gtk_window_present(GTK_WINDOW(app.window));

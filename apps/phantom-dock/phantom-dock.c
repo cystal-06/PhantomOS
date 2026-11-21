@@ -622,8 +622,8 @@ static gboolean on_anim_tick(gpointer data) {
                 dirty = 1;
             }
         }
-    } else if (app->show_t > 0.92) {
-        double k = 1.0 - exp(-20.0 * dt);
+    } else if (app->show_t >= 0.99) {
+        double k = 1.0 - exp(-22.0 * dt);
         for (int i = 0; i < app->item_count; i++) {
             double ts = (app->hovering && app->hover_idx == i) ? 1.15 : 1.0;
             if (fabs(app->items[i].scale - ts) > 0.004) {
@@ -671,7 +671,8 @@ static gboolean on_anim_tick(gpointer data) {
 static void start_anim(DockApp *app) {
     if (!app->anim_id) {
         app->last_tick_us = g_get_monotonic_time();
-        app->anim_id = g_timeout_add(16, on_anim_tick, app);
+        /* 10ms high-priority driver tick avoids beat-frequency judder against 60Hz scanout */
+        app->anim_id = g_timeout_add_full(G_PRIORITY_HIGH, 10, on_anim_tick, app, NULL);
     }
 }
 
@@ -679,19 +680,29 @@ static void on_screen_resized(GdkScreen *scr, gpointer data);
 
 static gboolean on_probe_tick(gpointer data) {
     DockApp *app = (DockApp *)data;
+    static int tick_n = 0;
     GdkScreen *scr = gdk_screen_get_default();
     if (scr) {
         on_screen_resized(scr, app);
     }
     probe_pointer_state(app);
-    int changed = probe_x11_windows(app);
-    if (changed) {
-        if (app->edge_win && !app->overview_open) {
-            Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
-            if (dpy) XRaiseWindow(dpy, app->edge_win);
-        }
-        if (GTK_WIDGET_VISIBLE(app->window)) gtk_widget_queue_draw(app->area);
+    int ov = (access("/tmp/.phantom-overview.pid", F_OK) == 0);
+    if (ov != app->overview_open) {
+        app->overview_open = ov;
         start_anim(app);
+    }
+    tick_n++;
+    /* Defer synchronous Xlib property polling while actively sliding */
+    if ((app->show_t <= 0.01 || app->show_t >= 0.99) && (tick_n % 6) == 0) {
+        int changed = probe_x11_windows(app);
+        if (changed) {
+            if (app->edge_win && !app->overview_open) {
+                Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+                if (dpy) XRaiseWindow(dpy, app->edge_win);
+            }
+            if (GTK_WIDGET_VISIBLE(app->window)) gtk_widget_queue_draw(app->area);
+            start_anim(app);
+        }
     }
     if (!app->overview_open && !app->has_open_tabs && app->show_t < 1.0) {
         start_anim(app);
@@ -838,7 +849,7 @@ int main(int argc, char *argv[]) {
     gtk_widget_realize(app.window);
     sync_dock_window_pos(&app);
 
-    g_timeout_add(30, on_probe_tick, &app);
+    g_timeout_add(25, on_probe_tick, &app);
     gtk_main();
 
     if (app.bg_surf) cairo_surface_destroy(app.bg_surf);

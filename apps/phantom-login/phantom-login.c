@@ -67,6 +67,9 @@ typedef struct {
     int hovering;
     double anim_t;
     guint anim_id;
+    gint64 last_tick_us;
+    cairo_surface_t *bg_surf;
+    int bg_w, bg_h;
 
     /* Interactive Hitboxes */
     Rect r_card_phantom;
@@ -330,8 +333,14 @@ static void layout_entries(LoginApp *app) {
 
 static gboolean on_login_anim_tick(gpointer data) {
     LoginApp *app = (LoginApp *)data;
+    gint64 now = g_get_monotonic_time();
+    double dt = (app->last_tick_us > 0) ? ((double)(now - app->last_tick_us) / 1000000.0) : (1.0 / 60.0);
+    app->last_tick_us = now;
+    if (dt < 0.004) dt = 0.004;
+    if (dt > 0.045) dt = 0.045;
+
     if (app->anim_t < 1.0) {
-        app->anim_t += 0.095;
+        app->anim_t += dt / 0.18;
         if (app->anim_t >= 1.0) {
             app->anim_t = 1.0;
         }
@@ -345,13 +354,15 @@ static gboolean on_login_anim_tick(gpointer data) {
         if (app->anim_t < 1.0) return TRUE;
     }
     app->anim_id = 0;
+    app->last_tick_us = 0;
     return FALSE;
 }
 
 static void start_login_anim(LoginApp *app) {
     app->anim_t = 0.08;
+    app->last_tick_us = g_get_monotonic_time();
     if (!app->anim_id) {
-        app->anim_id = g_timeout_add(16, on_login_anim_tick, app);
+        app->anim_id = g_timeout_add_full(G_PRIORITY_HIGH, 10, on_login_anim_tick, app, NULL);
     }
 }
 
@@ -382,16 +393,14 @@ static void enter_stage(LoginApp *app, int stage, int user_idx) {
     gtk_widget_queue_draw(app->window);
 }
 
-static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
-    (void)event;
-    LoginApp *app = (LoginApp *)data;
-    cairo_t *cr = gdk_cairo_create(widget->window);
-    int w = widget->allocation.width;
-    int h = widget->allocation.height;
-    app->scr_w = w;
-    app->scr_h = h;
+static void ensure_login_bg(LoginApp *app, int w, int h) {
+    if (app->bg_surf && app->bg_w == w && app->bg_h == h) return;
+    if (app->bg_surf) cairo_surface_destroy(app->bg_surf);
+    app->bg_surf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w, h);
+    app->bg_w = w;
+    app->bg_h = h;
+    cairo_t *cr = cairo_create(app->bg_surf);
 
-    /* Deep Arch/GNOME midnight atmospheric backdrop */
     cairo_pattern_t *bg = cairo_pattern_create_linear(0, 0, w, h);
     cairo_pattern_add_color_stop_rgb(bg, 0.0, 0.043, 0.055, 0.090);
     cairo_pattern_add_color_stop_rgb(bg, 0.5, 0.071, 0.086, 0.141);
@@ -400,7 +409,6 @@ static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpoin
     cairo_paint(cr);
     cairo_pattern_destroy(bg);
 
-    /* Soft ambient radial lighting */
     cairo_pattern_t *g1 = cairo_pattern_create_radial(w * 0.25, h * 0.22, 10, w * 0.25, h * 0.22, w * 0.48);
     cairo_pattern_add_color_stop_rgba(g1, 0.0, 0.208, 0.518, 0.894, 0.16);
     cairo_pattern_add_color_stop_rgba(g1, 1.0, 0.208, 0.518, 0.894, 0.0);
@@ -415,10 +423,35 @@ static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpoin
     cairo_paint(cr);
     cairo_pattern_destroy(g2);
 
-    /* Minimal translucent top bar (GDM style) */
     cairo_set_source_rgba(cr, 0.039, 0.047, 0.078, 0.72);
     cairo_rectangle(cr, 0, 0, w, 36);
     cairo_fill(cr);
+
+    cairo_destroy(cr);
+}
+
+static void on_login_realize(GtkWidget *w, gpointer data) {
+    (void)data;
+    if (w->window) {
+        gdk_window_set_back_pixmap(w->window, NULL, FALSE);
+    }
+}
+
+static gboolean on_window_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
+    (void)event;
+    LoginApp *app = (LoginApp *)data;
+    cairo_t *cr = gdk_cairo_create(widget->window);
+    int w = widget->allocation.width;
+    int h = widget->allocation.height;
+    app->scr_w = w;
+    app->scr_h = h;
+
+    /* Blit cached atmospheric gradient backdrop in <1ms instead of recomputing radial gradients */
+    ensure_login_bg(app, w, h);
+    if (app->bg_surf) {
+        cairo_set_source_surface(cr, app->bg_surf, 0, 0);
+        cairo_paint(cr);
+    }
 
     draw_text(cr, 18, 22, "PhantomOS", 0.537, 0.706, 0.980, 1, 11.0);
     draw_text(cr, 102, 22, app->hostname, 0.580, 0.620, 0.745, 0, 10.0);
@@ -1053,6 +1086,7 @@ int main(int argc, char *argv[]) {
     gtk_entry_set_invisible_char(GTK_ENTRY(app.pass_entry), 0x2022);
     gtk_fixed_put(GTK_FIXED(app.fixed), app.pass_entry, 0, 0);
 
+    g_signal_connect(app.window, "realize", G_CALLBACK(on_login_realize), &app);
     g_signal_connect(app.window, "expose-event", G_CALLBACK(on_window_expose), &app);
     g_signal_connect(app.window, "button-press-event", G_CALLBACK(on_window_button), &app);
     g_signal_connect(app.window, "motion-notify-event", G_CALLBACK(on_window_motion), &app);
@@ -1079,5 +1113,6 @@ int main(int argc, char *argv[]) {
     g_idle_add(focus_login_idle, &app);
 
     gtk_main();
+    if (app.bg_surf) cairo_surface_destroy(app.bg_surf);
     return 0;
 }

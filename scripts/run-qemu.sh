@@ -14,7 +14,8 @@ BOOT_MODE="stateless"
 UI_MODE="desktop"
 ENABLE_BROWSER="auto"
 MEM_SIZE="2048M"
-CPUS="2"
+HOST_CPUS="$(nproc 2>/dev/null || echo 2)"
+CPUS="$(( HOST_CPUS >= 4 ? 4 : HOST_CPUS ))"
 USE_KVM="auto"
 DEBUG_MODE=0
 
@@ -104,7 +105,7 @@ if [ "${UI_MODE}" = "headless" ]; then
     APPEND_OPTS+=("console=ttyS0" "headless")
 else
     QEMU_ARGS+=(
-        -display "gtk,show-cursor=on,zoom-to-fit=on"
+        -display "gtk,gl=on,show-cursor=on,zoom-to-fit=on"
         -device "virtio-vga,xres=1920,yres=1080"
         -device virtio-keyboard-pci
         -device qemu-xhci
