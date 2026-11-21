@@ -59,6 +59,7 @@ typedef struct {
     int has_open_tabs;
     int overview_open;
     int pointer_hot;
+    int sliding_up;
     gint64 hot_until_us;
 
     double show_t;       /* 0.0 = hidden, 1.0 = shown */
@@ -78,6 +79,12 @@ static double ease_out_cubic(double t) {
     if (t >= 1.0) return 1.0;
     double inv = 1.0 - t;
     return 1.0 - inv * inv * inv;
+}
+
+static double smoothstep(double t) {
+    if (t <= 0.0) return 0.0;
+    if (t >= 1.0) return 1.0;
+    return t * t * (3.0 - 2.0 * t);
 }
 
 static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
@@ -261,19 +268,25 @@ static void probe_pointer_state(DockApp *app) {
     unsigned int mask_ret = 0;
     if (!XQueryPointer(dpy, root, &r_ret, &c_ret, &rx, &ry, &wx, &wy, &mask_ret)) return;
 
-    int in_edge = (rx >= app->edge_x0 && rx <= app->edge_x1 && ry >= app->scr_h - 6);
+    int in_edge = (rx >= app->edge_x0 && rx <= app->edge_x1 && ry >= app->scr_h - 14);
     int in_dock = (app->show_t > 0.05 &&
                    rx >= app->dock_x - 16 && rx <= app->dock_x + app->win_w + 16 &&
-                   ry >= app->cur_y - 10);
+                   ry >= app->cur_y - 10 && ry <= app->cur_y + app->win_h);
 
     if (in_edge || in_dock) {
         app->pointer_hot = 1;
-        app->hot_until_us = g_get_monotonic_time() + 420000;
-        if (in_dock && ry >= app->cur_y) {
+        app->hot_until_us = g_get_monotonic_time() + 260000;
+        if (in_dock && ry >= app->cur_y && ry < app->cur_y + app->win_h &&
+            app->cur_y <= app->shown_y + 4) {
             app->hx = rx - app->dock_x;
             app->hy = ry - app->cur_y;
             app->hovering = 1;
             update_hover_idx(app, app->hx, app->hy);
+        } else {
+            if (app->hovering || app->hover_idx != -1) {
+                app->hovering = 0;
+                app->hover_idx = -1;
+            }
         }
         start_anim(app);
     } else {
@@ -495,7 +508,7 @@ static gboolean on_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data) {
     app->hy = ev->y;
     app->hovering = 1;
     app->pointer_hot = 1;
-    app->hot_until_us = g_get_monotonic_time() + 420000;
+    app->hot_until_us = g_get_monotonic_time() + 260000;
     int prev = app->hover_idx;
     update_hover_idx(app, ev->x, ev->y);
     if (prev != app->hover_idx) start_anim(app);
@@ -509,7 +522,7 @@ static gboolean on_enter(GtkWidget *w, GdkEventCrossing *ev, gpointer data) {
     app->hy = ev->y;
     app->hovering = 1;
     app->pointer_hot = 1;
-    app->hot_until_us = g_get_monotonic_time() + 420000;
+    app->hot_until_us = g_get_monotonic_time() + 260000;
     update_hover_idx(app, ev->x, ev->y);
     start_anim(app);
     return FALSE;
@@ -551,12 +564,16 @@ static void sync_dock_window_pos(DockApp *app) {
     if (app->show_t <= 0.001) {
         if (GTK_WIDGET_VISIBLE(app->window)) {
             gtk_widget_hide(app->window);
+            if (app->edge_win) {
+                Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+                if (dpy) XRaiseWindow(dpy, app->edge_win);
+            }
         }
         app->cur_y = app->hidden_y;
         return;
     }
 
-    double e = ease_out_cubic(app->show_t);
+    double e = app->sliding_up ? ease_out_cubic(app->show_t) : smoothstep(app->show_t);
     int ny = (int)(app->hidden_y + (app->shown_y - app->hidden_y) * e);
 
     if (!GTK_WIDGET_VISIBLE(app->window)) {
@@ -590,12 +607,47 @@ static gboolean on_anim_tick(gpointer data) {
     int grace = (now < app->hot_until_us);
     int want_visible = !app->overview_open &&
                        (!app->has_open_tabs || app->pointer_hot || grace);
+    app->sliding_up = want_visible;
 
     double target = want_visible ? 1.0 : 0.0;
     int active = 0;
+    int dirty = 0;
+
+    if (!want_visible) {
+        app->hovering = 0;
+        app->hover_idx = -1;
+        for (int i = 0; i < app->item_count; i++) {
+            if (app->items[i].scale != 1.0) {
+                app->items[i].scale = 1.0;
+                dirty = 1;
+            }
+        }
+    } else if (app->show_t > 0.92) {
+        double k = 1.0 - exp(-20.0 * dt);
+        for (int i = 0; i < app->item_count; i++) {
+            double ts = (app->hovering && app->hover_idx == i) ? 1.15 : 1.0;
+            if (fabs(app->items[i].scale - ts) > 0.004) {
+                app->items[i].scale += (ts - app->items[i].scale) * k;
+                dirty = 1;
+                active = 1;
+            } else if (app->items[i].scale != ts) {
+                app->items[i].scale = ts;
+                dirty = 1;
+                active = 1;
+            }
+        }
+    }
+
+    if (dirty && GTK_WIDGET_VISIBLE(app->window)) {
+        gtk_widget_queue_draw(app->area);
+        if (!want_visible) {
+            /* Flush static scale=1.0 frame before XMoveWindow slides down */
+            gdk_window_process_updates(app->area->window, FALSE);
+        }
+    }
 
     if (fabs(app->show_t - target) > 0.003) {
-        double step = (target > app->show_t) ? (dt / 0.19) : -(dt / 0.22);
+        double step = (target > app->show_t) ? (dt / 0.18) : -(dt / 0.25);
         app->show_t += step;
         if ((step > 0 && app->show_t > target) || (step < 0 && app->show_t < target)) {
             app->show_t = target;
@@ -606,24 +658,6 @@ static gboolean on_anim_tick(gpointer data) {
         app->show_t = target;
         sync_dock_window_pos(app);
         active = 1;
-    }
-
-    int dirty = 0;
-    double k = 1.0 - exp(-20.0 * dt);
-    for (int i = 0; i < app->item_count; i++) {
-        double ts = (app->hovering && app->hover_idx == i) ? 1.15 : 1.0;
-        if (fabs(app->items[i].scale - ts) > 0.004) {
-            app->items[i].scale += (ts - app->items[i].scale) * k;
-            dirty = 1;
-            active = 1;
-        } else if (app->items[i].scale != ts) {
-            app->items[i].scale = ts;
-            dirty = 1;
-            active = 1;
-        }
-    }
-    if (dirty && GTK_WIDGET_VISIBLE(app->window)) {
-        gtk_widget_queue_draw(app->area);
     }
 
     if (!active && !grace) {
@@ -641,8 +675,14 @@ static void start_anim(DockApp *app) {
     }
 }
 
+static void on_screen_resized(GdkScreen *scr, gpointer data);
+
 static gboolean on_probe_tick(gpointer data) {
     DockApp *app = (DockApp *)data;
+    GdkScreen *scr = gdk_screen_get_default();
+    if (scr) {
+        on_screen_resized(scr, app);
+    }
     probe_pointer_state(app);
     int changed = probe_x11_windows(app);
     if (changed) {
@@ -666,17 +706,17 @@ static GdkFilterReturn on_x11_filter(GdkXEvent *xev, GdkEvent *ev, gpointer data
     if (app->edge_win && e->xany.window == app->edge_win &&
         (e->type == EnterNotify || e->type == MotionNotify)) {
         app->pointer_hot = 1;
-        app->hot_until_us = g_get_monotonic_time() + 450000;
+        app->hot_until_us = g_get_monotonic_time() + 260000;
         start_anim(app);
     }
     return GDK_FILTER_CONTINUE;
 }
 
 static void compute_edge_bounds(DockApp *app) {
-    int pad = (app->scr_w > 100) ? 24 : 0;
+    int pad = (app->scr_w > 100) ? 16 : 0;
     app->edge_x0 = pad;
     app->edge_x1 = app->scr_w - pad;
-    app->edge_y0 = app->scr_h - 4;
+    app->edge_y0 = app->scr_h - 6;
 }
 
 static void create_bottom_edge_trigger(DockApp *app) {
@@ -692,16 +732,13 @@ static void create_bottom_edge_trigger(DockApp *app) {
     app->edge_win = XCreateWindow(
         dpy, root,
         app->edge_x0, app->edge_y0,
-        (unsigned int)(app->edge_x1 - app->edge_x0), 4,
+        (unsigned int)(app->edge_x1 - app->edge_x0), 6,
         0, CopyFromParent, InputOnly, CopyFromParent,
         CWOverrideRedirect | CWEventMask, &swa);
     XMapRaised(dpy, app->edge_win);
     XFlush(dpy);
 
-    GdkWindow *gwin = gdk_window_foreign_new(app->edge_win);
-    if (gwin) {
-        gdk_window_add_filter(gwin, on_x11_filter, app);
-    }
+    gdk_window_add_filter(NULL, on_x11_filter, app);
 }
 
 static void on_realize(GtkWidget *w, gpointer data) {
@@ -736,7 +773,7 @@ static void on_screen_resized(GdkScreen *scr, gpointer data) {
             Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
             compute_edge_bounds(app);
             XMoveResizeWindow(dpy, app->edge_win, app->edge_x0, app->edge_y0,
-                              (unsigned int)(app->edge_x1 - app->edge_x0), 4);
+                              (unsigned int)(app->edge_x1 - app->edge_x0), 6);
             XRaiseWindow(dpy, app->edge_win);
             XFlush(dpy);
         }
@@ -767,6 +804,7 @@ int main(int argc, char *argv[]) {
 
     probe_x11_windows(&app);
     app.show_t = (!app.has_open_tabs && !app.overview_open) ? 1.0 : 0.0;
+    app.sliding_up = (app.show_t > 0.5);
     app.cur_y = (app.show_t > 0.5) ? app.shown_y : app.hidden_y;
 
     build_bg_surface(&app);
@@ -800,7 +838,7 @@ int main(int argc, char *argv[]) {
     gtk_widget_realize(app.window);
     sync_dock_window_pos(&app);
 
-    g_timeout_add(45, on_probe_tick, &app);
+    g_timeout_add(30, on_probe_tick, &app);
     gtk_main();
 
     if (app.bg_surf) cairo_surface_destroy(app.bg_surf);
