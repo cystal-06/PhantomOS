@@ -22,9 +22,9 @@
 #include <X11/Xlib.h>
 #include <X11/extensions/Xrandr.h>
 
-#define MAX_MODES     12
+#define MAX_MODES     32
 #define MAX_WIFI_NETS 12
-#define MAX_ACTIONS   24
+#define MAX_ACTIONS   32
 #define SIDEBAR_W     236.0
 
 typedef struct {
@@ -312,7 +312,9 @@ static void probe_display(SettingsApp *app) {
                 app->cur_mode_w = sizes[i].width;
                 app->cur_mode_h = sizes[i].height;
             }
-            if (sizes[i].width >= 800 && sizes[i].height >= 600) {
+            int is_cur = (i == cur);
+            if (is_cur || (sizes[i].width >= 800 && sizes[i].width <= 1920 &&
+                           sizes[i].height >= 600 && sizes[i].height <= 1200)) {
                 int dup = 0;
                 for (int j = 0; j < app->mode_count; j++) {
                     if (app->modes[j].width == sizes[i].width &&
@@ -322,6 +324,18 @@ static void probe_display(SettingsApp *app) {
                 }
                 if (!dup) {
                     app->modes[app->mode_count++] = (DispMode){ sizes[i].width, sizes[i].height, i };
+                }
+            }
+        }
+        /* Put standard resolutions in clean ascending order */
+        for (int i = 0; i < app->mode_count - 1; i++) {
+            for (int j = i + 1; j < app->mode_count; j++) {
+                long ai = (long)app->modes[i].width * app->modes[i].height;
+                long aj = (long)app->modes[j].width * app->modes[j].height;
+                if (aj < ai) {
+                    DispMode tmp = app->modes[i];
+                    app->modes[i] = app->modes[j];
+                    app->modes[j] = tmp;
                 }
             }
         }
@@ -583,7 +597,7 @@ static void probe_sound_and_power(SettingsApp *app) {
             }
             fclose(cf);
         }
-        if (!app->drag_slider) {
+        if (!app->drag_slider && (app->page == PAGE_SOUND || app->vol_pct == 0)) {
             FILE *fp = popen("amixer get Master 2>/dev/null", "r");
             if (fp) {
                 char line[256];
@@ -942,6 +956,14 @@ static void draw_slider(cairo_t *cr, double x, double cy, double w, double frac,
     cairo_fill(cr);
 }
 
+static void draw_row_hover(cairo_t *cr, SettingsApp *app, Rect r) {
+    if (app->hovering && pt_in_rect(app->hx, app->hy, r)) {
+        rounded_rect(cr, r.x + 3, r.y + 3, r.w - 6, r.h - 6, 8.0);
+        cairo_set_source_rgb(cr, 0.145, 0.161, 0.227);
+        cairo_fill(cr);
+    }
+}
+
 static double draw_card_box(cairo_t *cr, double x, double y, double w, int rows, double row_h) {
     double h = rows * row_h;
     rounded_rect(cr, x, y, w, h, 12.0);
@@ -1090,18 +1112,20 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     switch (app->page) {
     case PAGE_WIFI: {
         draw_card_box(cr, cx, y, cw, 2, rh);
-        draw_text(cr, cx + 16, y + 29, "Wi-Fi Radio", 0.88, 0.90, 0.96, 1, 10.5);
         if (app->has_wifi) {
-            Rect rt = { cx + cw - 54, y + 12, 42, 24 };
+            Rect rt = { cx, y, cw, rh };
+            draw_row_hover(cr, app, rt);
             draw_switch(cr, cx + cw - 16, y + 24, app->wifi_up && !app->airplane_mode);
             add_action(app, rt, ACT_WIFI_TOGGLE, 0, NULL);
         } else {
             draw_text_right(cr, cx + cw - 16, y + 29, "No Wi-Fi Adapter", 0.62, 0.65, 0.76, 0, 10.0);
         }
+        draw_text(cr, cx + 16, y + 29, "Wi-Fi Radio", 0.88, 0.90, 0.96, 1, 10.5);
 
         double y2 = y + rh;
+        Rect ra = { cx, y2, cw, rh };
+        draw_row_hover(cr, app, ra);
         draw_text(cr, cx + 16, y2 + 29, "Airplane Mode", 0.88, 0.90, 0.96, 1, 10.5);
-        Rect ra = { cx + cw - 54, y2 + 12, 42, 24 };
         draw_switch(cr, cx + cw - 16, y2 + 24, app->airplane_mode);
         add_action(app, ra, ACT_WIFI_AIRPLANE, 0, NULL);
 
@@ -1124,7 +1148,8 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
             draw_card_box(cr, cx, y, cw, n, 44.0);
             for (int i = 0; i < n; i++) {
                 double ry = y + i * 44.0;
-                Rect rr = { cx + 4, ry + 2, cw - 8, 40 };
+                Rect rr = { cx, ry, cw, 44 };
+                draw_row_hover(cr, app, rr);
                 draw_text(cr, cx + 18, ry + 26, app->wifi_nets[i].ssid, 0.90, 0.93, 0.98, 1, 10.5);
                 if (app->wifi_nets[i].connected) {
                     draw_text_right(cr, cx + cw - 16, ry + 26, "Connected", 0.65, 0.89, 0.63, 1, 9.8);
@@ -1172,8 +1197,9 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
 
         /* Night Light */
         double y2 = y + 52.0;
+        Rect rnl = { cx, y2, cw, 52.0 };
+        draw_row_hover(cr, app, rnl);
         draw_text(cr, cx + 16, y2 + 31, "Night Light (Warm 4200K)", 0.88, 0.90, 0.96, 1, 10.5);
-        Rect rnl = { cx + cw - 54, y2 + 14, 42, 24 };
         draw_switch(cr, cx + cw - 16, y2 + 26, app->night_light);
         add_action(app, rnl, ACT_DISP_NIGHT, 0, NULL);
 
@@ -1190,12 +1216,13 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
             draw_card_box(cr, cx, y, cw, show_m, 42.0);
             for (int i = 0; i < show_m; i++) {
                 double ry = y + i * 42.0;
+                Rect rm = { cx, ry, cw, 42.0 };
+                draw_row_hover(cr, app, rm);
                 char rb[32];
                 snprintf(rb, sizeof(rb), "%d x %d", app->modes[i].width, app->modes[i].height);
                 int cur = (app->modes[i].width == app->cur_mode_w && app->modes[i].height == app->cur_mode_h);
                 draw_text(cr, cx + 16, ry + 26, rb, 0.90, 0.92, 0.97, cur, 10.5);
                 if (cur) draw_text_right(cr, cx + cw - 16, ry + 26, "Active", 0.54, 0.71, 0.98, 1, 9.8);
-                Rect rm = { cx + 4, ry + 2, cw - 8, 38 };
                 add_action(app, rm, ACT_DISP_MODE, app->modes[i].size_idx, NULL);
             }
         }
@@ -1213,8 +1240,9 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         draw_text_right(cr, cx + cw - 16, y2 + 31, vbuf, 0.73, 0.76, 0.87, 0, 10.0);
 
         double y3 = y2 + 52.0;
+        Rect rm = { cx, y3, cw, 52.0 };
+        draw_row_hover(cr, app, rm);
         draw_text(cr, cx + 16, y3 + 31, "Mute Output", 0.88, 0.90, 0.96, 1, 10.5);
-        Rect rm = { cx + cw - 54, y3 + 14, 42, 24 };
         draw_switch(cr, cx + cw - 16, y3 + 26, app->vol_muted);
         add_action(app, rm, ACT_SOUND_MUTE, 0, NULL);
         break;
@@ -1237,15 +1265,19 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         draw_text(cr, cx + 16, y + rh + 29, "ZRAM Swap (100% RAM)", 0.88, 0.90, 0.96, 1, 10.5);
         draw_text_right(cr, cx + cw - 16, y + rh + 29, zrv, 0.80, 0.65, 0.97, 0, 10.0);
 
+        Rect rbl_row = { cx, y + 2 * rh, cw, rh };
+        draw_row_hover(cr, app, rbl_row);
         draw_text(cr, cx + 16, y + 2 * rh + 29, "Screen Blank Timeout", 0.88, 0.90, 0.96, 1, 10.5);
         Rect rbl = { cx + cw - 110, y + 2 * rh + 11, 96, 26 };
         draw_pill_btn(cr, app, rbl, scv, 0);
-        add_action(app, rbl, ACT_POWER_BLANK, 0, NULL);
+        add_action(app, rbl_row, ACT_POWER_BLANK, 0, NULL);
 
+        Rect rmon_row = { cx, y + 3 * rh, cw, rh };
+        draw_row_hover(cr, app, rmon_row);
         draw_text(cr, cx + 16, y + 3 * rh + 29, "Live Resource Usage", 0.88, 0.90, 0.96, 1, 10.5);
         Rect rmon = { cx + cw - 134, y + 3 * rh + 11, 120, 26 };
         draw_pill_btn(cr, app, rmon, "System Monitor", 1);
-        add_action(app, rmon, ACT_POWER_MON, 0, NULL);
+        add_action(app, rmon_row, ACT_POWER_MON, 0, NULL);
 
         y += 4 * rh + 18.0;
         Rect rreb = { cx, y, 104, 34 };
@@ -1290,10 +1322,12 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         const char *wname[3] = { "PhantomOS Default", "Midnight Solid Dark", "Deep Ocean Slate" };
         for (int i = 0; i < 3; i++) {
             double ry = y + i * 48.0;
+            Rect rrow = { cx, ry, cw, 48.0 };
+            draw_row_hover(cr, app, rrow);
             draw_text(cr, cx + 16, ry + 29, wname[i], 0.88, 0.90, 0.96, app->wall_preset == i, 10.5);
             Rect rwp = { cx + cw - 92, ry + 11, 76, 26 };
             draw_pill_btn(cr, app, rwp, app->wall_preset == i ? "Applied" : "Apply", app->wall_preset == i);
-            add_action(app, rwp, ACT_APPEAR_WALL, i, NULL);
+            add_action(app, rrow, ACT_APPEAR_WALL, i, NULL);
         }
 
         y += 3 * 48.0 + 18.0;
@@ -1303,11 +1337,13 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         draw_card_box(cr, cx, y, cw, 4, 44.0);
         for (int i = 0; i < 4; i++) {
             double ry = y + i * 44.0;
+            Rect rrow = { cx, ry, cw, 44.0 };
+            draw_row_hover(cr, app, rrow);
             int act = (strcmp(app->cur_theme, themes[i]) == 0);
             draw_text(cr, cx + 16, ry + 27, themes[i], 0.88, 0.90, 0.96, act, 10.5);
             Rect rth = { cx + cw - 92, ry + 9, 76, 26 };
             draw_pill_btn(cr, app, rth, act ? "Active" : "Use", act);
-            add_action(app, rth, ACT_APPEAR_THEME, i, themes[i]);
+            add_action(app, rrow, ACT_APPEAR_THEME, i, themes[i]);
         }
         break;
     }
@@ -1322,11 +1358,13 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         draw_card_box(cr, cx, y, cw, 5, 52.0);
         for (int i = 0; i < 5; i++) {
             double ry = y + i * 52.0;
+            Rect rrow = { cx, ry, cw, 52.0 };
+            draw_row_hover(cr, app, rrow);
             draw_text(cr, cx + 16, ry + 22, apps[i].name, 0.90, 0.92, 0.98, 1, 10.5);
             draw_text(cr, cx + 16, ry + 39, apps[i].sub, 0.58, 0.62, 0.74, 0, 9.0);
             Rect rl = { cx + cw - 86, ry + 13, 70, 26 };
             draw_pill_btn(cr, app, rl, "Open", 0);
-            add_action(app, rl, ACT_LAUNCH_CMD, i, apps[i].cmd);
+            add_action(app, rrow, ACT_LAUNCH_CMD, i, apps[i].cmd);
         }
         break;
     }
