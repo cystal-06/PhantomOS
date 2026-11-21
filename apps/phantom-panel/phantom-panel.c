@@ -2030,7 +2030,7 @@ static gboolean on_qs_button_press(GtkWidget *w, GdkEventButton *ev, gpointer da
             g_timeout_add(220, take_screenshot_cb, app);
         } else if (pt_in_rect(ev->x, ev->y, app->r_qs_mon)) {
             gtk_widget_hide(app->qs_popup);
-            spawn_cmd("/usr/bin/phantom-monitor");
+            spawn_cmd("/usr/bin/phantom-settings");
         } else if (pt_in_rect(ev->x, ev->y, app->r_qs_lock) ||
                    pt_in_rect(ev->x, ev->y, app->r_qs_pwr)) {
             app->qs_power_confirm = !app->qs_power_confirm;

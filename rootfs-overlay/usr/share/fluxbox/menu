@@ -12,6 +12,7 @@
   [end]
   [separator]
   [submenu] (  Settings & Themes  )
+    [exec] (  System Settings  ) {phantom-settings}
     [stylesdir] (/usr/share/fluxbox/styles)
     [exec] (  Desktop Settings  ) {pcmanfm --desktop-pref}
   [end]
