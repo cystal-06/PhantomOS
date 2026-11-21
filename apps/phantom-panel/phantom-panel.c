@@ -1241,7 +1241,7 @@ static void fmt_short_mb(char *buf, size_t n, double mb) {
 
 static void draw_text(cairo_t *cr, double x, double y, const char *txt,
                       double r, double g, double b, int bold, double sz) {
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+    cairo_select_font_face(cr, "Adwaita Sans", CAIRO_FONT_SLANT_NORMAL,
                            bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, sz);
     cairo_set_source_rgb(cr, r, g, b);
@@ -1337,7 +1337,7 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     if (app->has_bat) {
         snprintf(btxt, sizeof(btxt), "%d%%", app->bat_pct);
         cairo_text_extents_t be;
-        cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+        cairo_select_font_face(cr, "Adwaita Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
         cairo_set_font_size(cr, 9.5);
         cairo_text_extents(cr, btxt, &be);
         btxt_w = be.width + 4.0;
@@ -1426,7 +1426,7 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     snprintf(rtxt, sizeof(rtxt), "%s/%s", rb, rtb);
 
     cairo_text_extents_t r_ext;
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_select_font_face(cr, "Adwaita Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(cr, 10.0);
     cairo_text_extents(cr, rtxt, &r_ext);
 
@@ -1473,7 +1473,7 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
 
 static void draw_text_right(cairo_t *cr, double rx, double y, const char *txt,
                             double r, double g, double b, int bold, double sz) {
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+    cairo_select_font_face(cr, "Adwaita Sans", CAIRO_FONT_SLANT_NORMAL,
                            bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, sz);
     cairo_text_extents_t ext;

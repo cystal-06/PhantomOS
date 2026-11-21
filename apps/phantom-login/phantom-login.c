@@ -202,7 +202,7 @@ static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, do
 
 static void draw_text(cairo_t *cr, double x, double y, const char *txt,
                       double r, double g, double b, int bold, double sz) {
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+    cairo_select_font_face(cr, "Adwaita Sans", CAIRO_FONT_SLANT_NORMAL,
                            bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, sz);
     cairo_set_source_rgb(cr, r, g, b);
@@ -213,7 +213,7 @@ static void draw_text(cairo_t *cr, double x, double y, const char *txt,
 
 static void draw_text_centered(cairo_t *cr, double cx, double y, const char *txt,
                                double r, double g, double b, int bold, double sz) {
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+    cairo_select_font_face(cr, "Adwaita Sans", CAIRO_FONT_SLANT_NORMAL,
                            bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, sz);
     cairo_text_extents_t ext;
@@ -684,7 +684,7 @@ static void style_entry(GtkWidget *entry) {
     gtk_entry_set_has_frame(GTK_ENTRY(entry), FALSE);
     gtk_widget_modify_base(entry, GTK_STATE_NORMAL, &base);
     gtk_widget_modify_text(entry, GTK_STATE_NORMAL, &text);
-    PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
+    PangoFontDescription *fd = pango_font_description_from_string("Adwaita Sans 11");
     gtk_widget_modify_font(entry, fd);
     pango_font_description_free(fd);
 }

@@ -131,7 +131,7 @@ static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, do
 
 static void draw_text_left(cairo_t *cr, double x, double y, const char *txt,
                            double r, double g, double b, double a, int bold, double sz) {
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+    cairo_select_font_face(cr, "Adwaita Sans", CAIRO_FONT_SLANT_NORMAL,
                            bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, sz);
     cairo_set_source_rgba(cr, r, g, b, a);
@@ -142,7 +142,7 @@ static void draw_text_left(cairo_t *cr, double x, double y, const char *txt,
 
 static void draw_text_center(cairo_t *cr, double cx, double y, const char *txt,
                              double r, double g, double b, double a, int bold, double sz) {
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+    cairo_select_font_face(cr, "Adwaita Sans", CAIRO_FONT_SLANT_NORMAL,
                            bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, sz);
     cairo_text_extents_t ext;
