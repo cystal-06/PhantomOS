@@ -60,6 +60,7 @@ typedef struct {
     gint64 last_tick_us;
     double anim_t;        /* 0.0 -> 1.0 open/close */
     int closing;          /* 1 = playing close animation before quit */
+    int kbd_grabbed;
     double page_pos;      /* animated grid page offset */
     int target_page;
     double ws_sel_pos;    /* animated active workspace highlight */
@@ -453,11 +454,12 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         cairo_paint(cr);
     }
 
-    /* Atmospheric GNOME dark slate tint interpolating with anim_t */
+    /* Atmospheric GNOME dark slate tint with smooth floor so desktop icons never flash bright */
+    double dim_k = 0.35 + 0.65 * e;
     cairo_pattern_t *dim = cairo_pattern_create_linear(0, 0, w, h);
-    cairo_pattern_add_color_stop_rgba(dim, 0.0, 0.082, 0.098, 0.165, 0.72 * e);
-    cairo_pattern_add_color_stop_rgba(dim, 0.5, 0.102, 0.125, 0.212, 0.68 * e);
-    cairo_pattern_add_color_stop_rgba(dim, 1.0, 0.075, 0.090, 0.153, 0.76 * e);
+    cairo_pattern_add_color_stop_rgba(dim, 0.0, 0.082, 0.098, 0.165, 0.72 * dim_k);
+    cairo_pattern_add_color_stop_rgba(dim, 0.5, 0.102, 0.125, 0.212, 0.68 * dim_k);
+    cairo_pattern_add_color_stop_rgba(dim, 1.0, 0.075, 0.090, 0.153, 0.76 * dim_k);
     cairo_set_source(cr, dim);
     cairo_paint(cr);
     cairo_pattern_destroy(dim);
@@ -599,9 +601,9 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
             int row = local / cols;
 
             /* Subtle staggered entrance for each icon */
-            double stagger = local * 0.025;
+            double stagger = local * 0.020;
             double ie = ease_out_cubic((app->anim_t - stagger) / (1.0 - stagger));
-            double slide_off = (1.0 - ie) * 24.0;
+            double slide_off = (1.0 - ie) * 20.0;
 
             double cx = grid_x0 + col * cell_w + cell_w * 0.5;
             double cy = grid_y0 + row * cell_h + cell_h * 0.5 + slide_off;
@@ -610,6 +612,8 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
             app->r_app_idx[app->r_app_n] = idx;
             app->r_app_n++;
 
+            if (ie <= 0.01) continue;
+
             int hov = app->hovering && app->hover_app_idx == idx;
             if (hov) {
                 rounded_rect(cr, rc.x, rc.y, rc.w, rc.h, 16.0);
@@ -617,7 +621,7 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
                 cairo_fill(cr);
             }
 
-            double icon_sc = (0.78 + 0.22 * ie) * app->hover_scale[idx];
+            double icon_sc = (0.82 + 0.18 * ie) * app->hover_scale[idx];
             draw_pixbuf_scaled(cr, app->apps[idx].pb64, cx, cy - 12.0, icon_sc, ie);
             draw_text_center(cr, cx, cy + 38.0, app->apps[idx].name,
                              0.94, 0.96, 1.0, ie, hov ? 1 : 0, 10.6);
@@ -809,6 +813,12 @@ static gboolean on_anim_tick(gpointer data) {
         }
     }
 
+    if (!app->kbd_grabbed && app->window && app->window->window) {
+        if (gdk_keyboard_grab(app->window->window, TRUE, GDK_CURRENT_TIME) == GDK_GRAB_SUCCESS) {
+            app->kbd_grabbed = 1;
+        }
+    }
+
     if (dirty) gtk_widget_queue_draw(app->window);
     return TRUE;
 }
@@ -972,14 +982,8 @@ static gboolean on_scroll(GtkWidget *w, GdkEventScroll *ev, gpointer data) {
 static void on_realize(GtkWidget *w, gpointer data) {
     (void)data;
     if (!w || !w->window) return;
+    gdk_window_set_override_redirect(w->window, TRUE);
     gdk_window_set_back_pixmap(w->window, NULL, FALSE);
-    Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
-    Window xid = GDK_WINDOW_XID(w->window);
-    Atom a_state = XInternAtom(dpy, "_NET_WM_STATE", False);
-    Atom a_above = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
-    Atom a_full = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
-    Atom states[2] = { a_full, a_above };
-    XChangeProperty(dpy, xid, a_state, XA_ATOM, 32, PropModeReplace, (unsigned char *)states, 2);
 }
 
 int main(int argc, char *argv[]) {
@@ -1013,24 +1017,21 @@ int main(int argc, char *argv[]) {
     capture_blurred_desktop(&app);
     probe_x11_state(&app);
     app.ws_sel_pos = (double)app.cur_ws;
+    app.anim_t = 0.14;
     init_apps(&app);
 
     pf = fopen(PID_FILE, "w");
     if (pf) { fprintf(pf, "%d\n", (int)getpid()); fclose(pf); }
     signal(SIGUSR1, on_sig_usr1);
 
-    app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    /* GTK_WINDOW_POPUP = atomic override-redirect map at (0,0,scr_w,scr_h) with zero WM resize flicker */
+    app.window = gtk_window_new(GTK_WINDOW_POPUP);
     gtk_window_set_title(GTK_WINDOW(app.window), "phantom-overview");
-    gtk_window_set_decorated(GTK_WINDOW(app.window), FALSE);
-    gtk_window_set_skip_taskbar_hint(GTK_WINDOW(app.window), TRUE);
-    gtk_window_set_skip_pager_hint(GTK_WINDOW(app.window), TRUE);
     gtk_window_set_default_size(GTK_WINDOW(app.window), app.scr_w, app.scr_h);
     gtk_widget_set_size_request(app.window, app.scr_w, app.scr_h);
     gtk_window_move(GTK_WINDOW(app.window), 0, 0);
-    gtk_window_fullscreen(GTK_WINDOW(app.window));
-    gtk_window_stick(GTK_WINDOW(app.window));
-    gtk_window_set_keep_above(GTK_WINDOW(app.window), TRUE);
     gtk_widget_set_app_paintable(app.window, TRUE);
+    gtk_widget_set_double_buffered(app.window, TRUE);
     gtk_widget_add_events(app.window,
         GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK |
         GDK_KEY_PRESS_MASK | GDK_SCROLL_MASK);
@@ -1046,9 +1047,14 @@ int main(int argc, char *argv[]) {
     app.last_tick_us = g_get_monotonic_time();
     g_timeout_add_full(G_PRIORITY_HIGH, 10, on_anim_tick, &app, NULL);
 
+    gtk_widget_realize(app.window);
+    gtk_window_move(GTK_WINDOW(app.window), 0, 0);
     gtk_widget_show(app.window);
-    gtk_window_present(GTK_WINDOW(app.window));
-    gdk_keyboard_grab(app.window->window, TRUE, GDK_CURRENT_TIME);
+    gdk_window_raise(app.window->window);
+    gdk_window_process_updates(app.window->window, TRUE);
+    if (gdk_keyboard_grab(app.window->window, TRUE, GDK_CURRENT_TIME) == GDK_GRAB_SUCCESS) {
+        app.kbd_grabbed = 1;
+    }
     gtk_main();
 
     gdk_keyboard_ungrab(GDK_CURRENT_TIME);

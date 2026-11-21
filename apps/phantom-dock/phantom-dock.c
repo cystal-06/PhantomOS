@@ -536,6 +536,31 @@ static gboolean on_leave(GtkWidget *w, GdkEventCrossing *ev, gpointer data) {
     return FALSE;
 }
 
+static void hide_dock_immediately(DockApp *app) {
+    app->pointer_hot = 0;
+    app->hot_until_us = 0;
+    app->hovering = 0;
+    app->hover_idx = -1;
+    app->sliding_up = 0;
+    app->show_t = 0.0;
+    app->cur_y = app->hidden_y;
+    for (int i = 0; i < app->item_count; i++) {
+        app->items[i].scale = 1.0;
+    }
+    if (app->anim_id) {
+        g_source_remove(app->anim_id);
+        app->anim_id = 0;
+        app->last_tick_us = 0;
+    }
+    if (app->window && GTK_WIDGET_VISIBLE(app->window)) {
+        gtk_widget_hide(app->window);
+    }
+    if (app->edge_win) {
+        Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+        if (dpy) XRaiseWindow(dpy, app->edge_win);
+    }
+}
+
 static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data) {
     (void)w;
     DockApp *app = (DockApp *)data;
@@ -543,6 +568,10 @@ static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
     update_hover_idx(app, ev->x, ev->y);
 
     if (app->hover_idx == 99) {
+        app->overview_open = 1;
+        hide_dock_immediately(app);
+        gdk_flush();
+        g_usleep(15000);
         spawn_cmd("/usr/bin/phantom-overview");
         return TRUE;
     }
@@ -605,8 +634,14 @@ static gboolean on_anim_tick(gpointer data) {
     if (dt > 0.045) dt = 0.045;
 
     int grace = (now < app->hot_until_us);
-    int want_visible = !app->overview_open &&
-                       (!app->has_open_tabs || app->pointer_hot || grace);
+    if (app->overview_open || access("/tmp/.phantom-overview.pid", F_OK) == 0) {
+        app->overview_open = 1;
+        app->anim_id = 0; /* Returning FALSE destroys the active timer source cleanly */
+        app->last_tick_us = 0;
+        hide_dock_immediately(app);
+        return FALSE;
+    }
+    int want_visible = !app->has_open_tabs || app->pointer_hot || grace;
     app->sliding_up = want_visible;
 
     double target = want_visible ? 1.0 : 0.0;
@@ -687,9 +722,15 @@ static gboolean on_probe_tick(gpointer data) {
     }
     probe_pointer_state(app);
     int ov = (access("/tmp/.phantom-overview.pid", F_OK) == 0);
-    if (ov != app->overview_open) {
-        app->overview_open = ov;
-        start_anim(app);
+    if (ov) {
+        if (!app->overview_open || (app->window && GTK_WIDGET_VISIBLE(app->window))) {
+            app->overview_open = 1;
+            hide_dock_immediately(app);
+        }
+        return TRUE;
+    } else if (app->overview_open) {
+        app->overview_open = 0;
+        app->hot_until_us = 0;
     }
     tick_n++;
     /* Defer synchronous Xlib property polling while actively sliding */
@@ -714,7 +755,7 @@ static GdkFilterReturn on_x11_filter(GdkXEvent *xev, GdkEvent *ev, gpointer data
     (void)ev;
     DockApp *app = (DockApp *)data;
     XEvent *e = (XEvent *)xev;
-    if (app->edge_win && e->xany.window == app->edge_win &&
+    if (!app->overview_open && app->edge_win && e->xany.window == app->edge_win &&
         (e->type == EnterNotify || e->type == MotionNotify)) {
         app->pointer_hot = 1;
         app->hot_until_us = g_get_monotonic_time() + 260000;
