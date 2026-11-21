@@ -105,9 +105,8 @@ if [ "${UI_MODE}" = "headless" ]; then
 else
     QEMU_ARGS+=(
         -device "virtio-vga,xres=1280,yres=800"
-        -device virtio-mouse-pci
         -device virtio-keyboard-pci
-        -usb
+        -device qemu-xhci
         -device usb-tablet
     )
     if [ "${ENABLE_BROWSER}" != "no" ] && [ -f "${BROWSER_IMAGE}" ]; then

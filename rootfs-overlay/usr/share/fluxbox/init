@@ -16,6 +16,7 @@ session.screen0.iconbar.usePixmap: false
 session.screen0.focusModel: ClickToFocus
 session.screen0.window.focusModel: ClickToFocus
 session.screen0.edgeSnapThreshold: 10
+session.doubleClickInterval: 450
 session.screen0.opaqueMove: True
 session.screen0.fullMaximization: False
 session.screen0.showwindowposition: False
