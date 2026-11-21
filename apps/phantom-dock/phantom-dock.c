@@ -38,7 +38,9 @@ typedef struct {
 typedef struct {
     GtkWidget *window;
     GtkWidget *area;
-    cairo_surface_t *blur_wall;
+    Window edge_win;
+    int edge_x0, edge_x1, edge_y0;
+    cairo_surface_t *bg_surf;
 
     int scr_w;
     int scr_h;
@@ -56,14 +58,15 @@ typedef struct {
 
     int has_open_tabs;
     int overview_open;
-    int pointer_inside;
-    gint64 leave_us;
+    int pointer_hot;
+    gint64 hot_until_us;
 
-    double show_t;       /* 0.0 = hidden at bottom edge, 1.0 = fully raised */
+    double show_t;       /* 0.0 = hidden, 1.0 = shown */
     double hx, hy;
     int hovering;
     int hover_idx;       /* -1 none, 0..item_count-1 item, 99 dots */
     guint anim_id;
+    gint64 last_tick_us;
 } DockApp;
 
 static int pt_in_rect(double px, double py, Rect r) {
@@ -158,32 +161,64 @@ static void focus_x11_window(Display *dpy, Window win, long target_ws) {
     XFlush(dpy);
 }
 
-static void load_blurred_wallpaper_strip(DockApp *app) {
-    GdkPixbuf *wp = gdk_pixbuf_new_from_file_at_scale(WALL_PATH, app->scr_w, app->scr_h, FALSE, NULL);
-    if (!wp) return;
-
-    int sy = app->shown_y;
-    if (sy < 0) sy = 0;
-    if (sy + app->win_h > app->scr_h) sy = app->scr_h - app->win_h;
-
-    GdkPixbuf *strip = gdk_pixbuf_new_subpixbuf(wp, app->dock_x, sy, app->win_w, app->win_h);
-    if (strip) {
-        int dw = app->win_w / 10;
-        int dh = app->win_h / 6;
-        if (dw < 24) dw = 24;
-        if (dh < 8) dh = 8;
-        GdkPixbuf *small = gdk_pixbuf_scale_simple(strip, dw, dh, GDK_INTERP_BILINEAR);
-        g_object_unref(strip);
-        if (small) {
-            app->blur_wall = cairo_image_surface_create(CAIRO_FORMAT_RGB24, dw, dh);
-            cairo_t *bcr = cairo_create(app->blur_wall);
-            gdk_cairo_set_source_pixbuf(bcr, small, 0, 0);
-            cairo_paint(bcr);
-            cairo_destroy(bcr);
-            g_object_unref(small);
-        }
+static void build_bg_surface(DockApp *app) {
+    if (app->bg_surf) {
+        cairo_surface_destroy(app->bg_surf);
+        app->bg_surf = NULL;
     }
-    g_object_unref(wp);
+    app->bg_surf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, app->win_w, app->win_h);
+    cairo_t *cr = cairo_create(app->bg_surf);
+
+    GdkPixbuf *wp = gdk_pixbuf_new_from_file_at_scale(WALL_PATH, app->scr_w, app->scr_h, FALSE, NULL);
+    if (wp) {
+        int sy = app->shown_y;
+        if (sy < 0) sy = 0;
+        if (sy + app->win_h > app->scr_h) sy = app->scr_h - app->win_h;
+        GdkPixbuf *strip = gdk_pixbuf_new_subpixbuf(wp, app->dock_x, sy, app->win_w, app->win_h);
+        if (strip) {
+            int dw = app->win_w / 10;
+            int dh = app->win_h / 6;
+            if (dw < 24) dw = 24;
+            if (dh < 8) dh = 8;
+            GdkPixbuf *small = gdk_pixbuf_scale_simple(strip, dw, dh, GDK_INTERP_BILINEAR);
+            g_object_unref(strip);
+            if (small) {
+                cairo_save(cr);
+                cairo_scale(cr, (double)app->win_w / dw, (double)app->win_h / dh);
+                gdk_cairo_set_source_pixbuf(cr, small, 0, 0);
+                cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+                cairo_paint(cr);
+                cairo_restore(cr);
+                g_object_unref(small);
+            }
+        }
+        g_object_unref(wp);
+    } else {
+        cairo_set_source_rgb(cr, 0.08, 0.09, 0.14);
+        cairo_paint(cr);
+    }
+
+    /* Frosted translucent glass tint + crisp top highlight */
+    cairo_pattern_t *glass = cairo_pattern_create_linear(0, 0, 0, app->win_h);
+    cairo_pattern_add_color_stop_rgba(glass, 0.0, 0.157, 0.173, 0.247, 0.78);
+    cairo_pattern_add_color_stop_rgba(glass, 1.0, 0.086, 0.094, 0.141, 0.90);
+    cairo_set_source(cr, glass);
+    cairo_paint(cr);
+    cairo_pattern_destroy(glass);
+
+    rounded_rect(cr, 0.75, 0.75, app->win_w - 1.5, app->win_h - 1.5, 20.5);
+    cairo_set_source_rgba(cr, 0.85, 0.90, 1.0, 0.18);
+    cairo_set_line_width(cr, 1.1);
+    cairo_stroke(cr);
+
+    double div_x = app->win_w - 54.0;
+    cairo_set_source_rgba(cr, 0.80, 0.84, 0.96, 0.18);
+    cairo_set_line_width(cr, 1.0);
+    cairo_move_to(cr, div_x, 15.0);
+    cairo_line_to(cr, div_x, app->win_h - 15.0);
+    cairo_stroke(cr);
+
+    cairo_destroy(cr);
 }
 
 static void apply_pill_shape(DockApp *app) {
@@ -202,119 +237,154 @@ static void apply_pill_shape(DockApp *app) {
     g_object_unref(mask);
 }
 
-static void probe_x11_windows_and_pointer(DockApp *app) {
-    app->overview_open = (access("/tmp/.phantom-overview.pid", F_OK) == 0);
-    app->has_open_tabs = 0;
+static void update_hover_idx(DockApp *app, double x, double y) {
+    app->hover_idx = -1;
     for (int i = 0; i < app->item_count; i++) {
+        if (pt_in_rect(x, y, app->r_items[i])) {
+            app->hover_idx = i;
+            return;
+        }
+    }
+    if (pt_in_rect(x, y, app->r_dots)) {
+        app->hover_idx = 99;
+    }
+}
+
+static void start_anim(DockApp *app);
+
+static void probe_pointer_state(DockApp *app) {
+    Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+    if (!dpy) return;
+    Window root = DefaultRootWindow(dpy);
+    Window r_ret = None, c_ret = None;
+    int rx = 0, ry = 0, wx = 0, wy = 0;
+    unsigned int mask_ret = 0;
+    if (!XQueryPointer(dpy, root, &r_ret, &c_ret, &rx, &ry, &wx, &wy, &mask_ret)) return;
+
+    int in_edge = (rx >= app->edge_x0 && rx <= app->edge_x1 && ry >= app->scr_h - 6);
+    int in_dock = (app->show_t > 0.05 &&
+                   rx >= app->dock_x - 16 && rx <= app->dock_x + app->win_w + 16 &&
+                   ry >= app->cur_y - 10);
+
+    if (in_edge || in_dock) {
+        app->pointer_hot = 1;
+        app->hot_until_us = g_get_monotonic_time() + 420000;
+        if (in_dock && ry >= app->cur_y) {
+            app->hx = rx - app->dock_x;
+            app->hy = ry - app->cur_y;
+            app->hovering = 1;
+            update_hover_idx(app, app->hx, app->hy);
+        }
+        start_anim(app);
+    } else {
+        app->pointer_hot = 0;
+        if (app->hovering || app->hover_idx != -1) {
+            app->hovering = 0;
+            app->hover_idx = -1;
+            start_anim(app);
+        }
+    }
+}
+
+static int probe_x11_windows(DockApp *app) {
+    int prev_ov = app->overview_open;
+    int prev_tabs = app->has_open_tabs;
+    int prev_run = 0;
+    for (int i = 0; i < app->item_count; i++) {
+        if (app->items[i].running) prev_run |= (1 << i);
         app->items[i].running = 0;
         app->items[i].match_win = None;
         app->items[i].match_ws = 0;
     }
 
+    app->overview_open = (access("/tmp/.phantom-overview.pid", F_OK) == 0);
+    app->has_open_tabs = 0;
+
     Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
-    if (!dpy) return;
-    Window root = DefaultRootWindow(dpy);
+    if (dpy) {
+        Window root = DefaultRootWindow(dpy);
+        Atom a_cur = XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
+        Atom a_list = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
+        Atom a_desk = XInternAtom(dpy, "_NET_WM_DESKTOP", False);
+        Atom a_type = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
+        Atom a_dock = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
+        Atom a_dt = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
+        Atom a_state = XInternAtom(dpy, "_NET_WM_STATE", False);
+        Atom a_hidden = XInternAtom(dpy, "_NET_WM_STATE_HIDDEN", False);
+        Atom a_name = XInternAtom(dpy, "_NET_WM_NAME", False);
+        Atom a_utf8 = XInternAtom(dpy, "UTF8_STRING", False);
 
-    /* Query root pointer so bottom-edge hover reliably wakes hidden dock */
-    Window r_ret = None, c_ret = None;
-    int rx = 0, ry = 0, wx = 0, wy = 0;
-    unsigned int mask_ret = 0;
-    if (XQueryPointer(dpy, root, &r_ret, &c_ret, &rx, &ry, &wx, &wy, &mask_ret)) {
-        int hot_x0 = app->dock_x - 30;
-        int hot_x1 = app->dock_x + app->win_w + 30;
-        int hot_y = (app->show_t > 0.2) ? (app->cur_y - 4) : (app->scr_h - 8);
-        if (rx >= hot_x0 && rx <= hot_x1 && ry >= hot_y) {
-            app->pointer_inside = 1;
-            if (ry >= app->cur_y) {
-                app->hx = rx - app->dock_x;
-                app->hy = ry - app->cur_y;
-                app->hovering = 1;
-            }
-        } else {
-            if (app->pointer_inside) {
-                app->leave_us = g_get_monotonic_time();
-            }
-            app->pointer_inside = 0;
-            app->hovering = 0;
-            app->hover_idx = -1;
-        }
-    }
+        long cur_ws = x11_get_card(dpy, root, a_cur, 0);
 
-    Atom a_cur = XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
-    Atom a_list = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
-    Atom a_desk = XInternAtom(dpy, "_NET_WM_DESKTOP", False);
-    Atom a_type = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
-    Atom a_dock = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
-    Atom a_dt = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
-    Atom a_state = XInternAtom(dpy, "_NET_WM_STATE", False);
-    Atom a_hidden = XInternAtom(dpy, "_NET_WM_STATE_HIDDEN", False);
-    Atom a_name = XInternAtom(dpy, "_NET_WM_NAME", False);
-    Atom a_utf8 = XInternAtom(dpy, "UTF8_STRING", False);
-
-    long cur_ws = x11_get_card(dpy, root, a_cur, 0);
-
-    Atom at = None;
-    int fmt = 0;
-    unsigned long n = 0, after = 0;
-    unsigned char *data = NULL;
-    if (XGetWindowProperty(dpy, root, a_list, 0, 64, False, XA_WINDOW,
-                           &at, &fmt, &n, &after, &data) == Success && data) {
-        Window *wins = (Window *)data;
-        for (unsigned long i = 0; i < n; i++) {
-            if (window_has_atom(dpy, wins[i], a_type, a_dock) ||
-                window_has_atom(dpy, wins[i], a_type, a_dt)) {
-                continue;
-            }
-            XWindowAttributes attr;
-            if (!XGetWindowAttributes(dpy, wins[i], &attr)) continue;
-            if (attr.map_state != IsViewable && !window_has_atom(dpy, wins[i], a_state, a_hidden)) {
-                continue;
-            }
-
-            char title[128] = "";
-            Atom nt = None;
-            int nfmt = 0;
-            unsigned long nn = 0, nafter = 0;
-            unsigned char *ndata = NULL;
-            if (XGetWindowProperty(dpy, wins[i], a_name, 0, 64, False, a_utf8,
-                                   &nt, &nfmt, &nn, &nafter, &ndata) == Success && ndata) {
-                g_strlcpy(title, (const char *)ndata, sizeof(title));
-                XFree(ndata);
-            }
-            if (!title[0]) {
-                char *wmname = NULL;
-                if (XFetchName(dpy, wins[i], &wmname) && wmname) {
-                    g_strlcpy(title, wmname, sizeof(title));
-                    XFree(wmname);
+        Atom at = None;
+        int fmt = 0;
+        unsigned long n = 0, after = 0;
+        unsigned char *data = NULL;
+        if (XGetWindowProperty(dpy, root, a_list, 0, 64, False, XA_WINDOW,
+                               &at, &fmt, &n, &after, &data) == Success && data) {
+            Window *wins = (Window *)data;
+            for (unsigned long i = 0; i < n; i++) {
+                if (window_has_atom(dpy, wins[i], a_type, a_dock) ||
+                    window_has_atom(dpy, wins[i], a_type, a_dt)) {
+                    continue;
                 }
-            }
-            if (strcmp(title, "phantom-panel") == 0 ||
-                strcmp(title, "phantom-panel-qs") == 0 ||
-                strcmp(title, "phantom-panel-ram") == 0 ||
-                strcmp(title, "phantom-dock") == 0 ||
-                strcmp(title, "phantom-overview") == 0 ||
-                (strcmp(title, "pcmanfm") == 0 && attr.width == app->scr_w)) {
-                continue;
-            }
+                XWindowAttributes attr;
+                if (!XGetWindowAttributes(dpy, wins[i], &attr)) continue;
+                if (attr.map_state != IsViewable && !window_has_atom(dpy, wins[i], a_state, a_hidden)) {
+                    continue;
+                }
 
-            long ws = x11_get_card(dpy, wins[i], a_desk, cur_ws);
-            int minimized = window_has_atom(dpy, wins[i], a_state, a_hidden);
-            if (!minimized && attr.map_state == IsViewable && (ws == cur_ws || ws == -1)) {
-                app->has_open_tabs = 1;
-            }
+                char title[128] = "";
+                Atom nt = None;
+                int nfmt = 0;
+                unsigned long nn = 0, nafter = 0;
+                unsigned char *ndata = NULL;
+                if (XGetWindowProperty(dpy, wins[i], a_name, 0, 64, False, a_utf8,
+                                       &nt, &nfmt, &nn, &nafter, &ndata) == Success && ndata) {
+                    g_strlcpy(title, (const char *)ndata, sizeof(title));
+                    XFree(ndata);
+                }
+                if (!title[0]) {
+                    char *wmname = NULL;
+                    if (XFetchName(dpy, wins[i], &wmname) && wmname) {
+                        g_strlcpy(title, wmname, sizeof(title));
+                        XFree(wmname);
+                    }
+                }
+                if (strcmp(title, "phantom-panel") == 0 ||
+                    strcmp(title, "phantom-panel-qs") == 0 ||
+                    strcmp(title, "phantom-panel-ram") == 0 ||
+                    strcmp(title, "phantom-dock") == 0 ||
+                    strcmp(title, "phantom-overview") == 0 ||
+                    (strcmp(title, "pcmanfm") == 0 && attr.width == app->scr_w)) {
+                    continue;
+                }
 
-            for (int k = 0; k < app->item_count; k++) {
-                if (title[0] && strcasestr(title, app->items[k].match_key)) {
-                    app->items[k].running = 1;
-                    if (app->items[k].match_win == None || ws == cur_ws) {
-                        app->items[k].match_win = wins[i];
-                        app->items[k].match_ws = ws;
+                long ws = x11_get_card(dpy, wins[i], a_desk, cur_ws);
+                int minimized = window_has_atom(dpy, wins[i], a_state, a_hidden);
+                if (!minimized && attr.map_state == IsViewable && (ws == cur_ws || ws == -1)) {
+                    app->has_open_tabs = 1;
+                }
+
+                for (int k = 0; k < app->item_count; k++) {
+                    if (title[0] && strcasestr(title, app->items[k].match_key)) {
+                        app->items[k].running = 1;
+                        if (app->items[k].match_win == None || ws == cur_ws) {
+                            app->items[k].match_win = wins[i];
+                            app->items[k].match_ws = ws;
+                        }
                     }
                 }
             }
+            XFree(data);
         }
-        XFree(data);
     }
+
+    int cur_run = 0;
+    for (int i = 0; i < app->item_count; i++) {
+        if (app->items[i].running) cur_run |= (1 << i);
+    }
+    return (prev_ov != app->overview_open || prev_tabs != app->has_open_tabs || prev_run != cur_run);
 }
 
 static void init_items(DockApp *app) {
@@ -353,37 +423,14 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     double w = (double)widget->allocation.width;
     double h = (double)widget->allocation.height;
 
-    /* Blurred frosted glass background behind pill */
-    if (app->blur_wall) {
-        int bw = cairo_image_surface_get_width(app->blur_wall);
-        int bh = cairo_image_surface_get_height(app->blur_wall);
-        cairo_save(cr);
-        cairo_scale(cr, w / bw, h / bh);
-        cairo_set_source_surface(cr, app->blur_wall, 0, 0);
-        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+    if (app->bg_surf) {
+        cairo_set_source_surface(cr, app->bg_surf, 0, 0);
         cairo_paint(cr);
-        cairo_restore(cr);
     } else {
-        cairo_set_source_rgb(cr, 0.08, 0.09, 0.14);
+        cairo_set_source_rgb(cr, 0.09, 0.10, 0.15);
         cairo_paint(cr);
     }
 
-    /* Translucent frosted dark GNOME dock overlay */
-    rounded_rect(cr, 0, 0, w, h, 21.0);
-    cairo_pattern_t *glass = cairo_pattern_create_linear(0, 0, 0, h);
-    cairo_pattern_add_color_stop_rgba(glass, 0.0, 0.149, 0.165, 0.235, 0.78);
-    cairo_pattern_add_color_stop_rgba(glass, 1.0, 0.090, 0.098, 0.145, 0.88);
-    cairo_set_source(cr, glass);
-    cairo_fill(cr);
-    cairo_pattern_destroy(glass);
-
-    /* Subtle top edge glass highlight & outer ring */
-    rounded_rect(cr, 0.75, 0.75, w - 1.5, h - 1.5, 20.5);
-    cairo_set_source_rgba(cr, 0.85, 0.90, 1.0, 0.16);
-    cairo_set_line_width(cr, 1.1);
-    cairo_stroke(cr);
-
-    /* Pinned Dock Icons */
     double sp = 56.0;
     double x = 16.0 + sp * 0.5;
     for (int i = 0; i < app->item_count; i++) {
@@ -394,7 +441,7 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         int hov = (app->hovering && app->hover_idx == i);
         if (hov) {
             rounded_rect(cr, r.x + 2, 7, r.w - 4, h - 14, 14.0);
-            cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.13);
+            cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.14);
             cairo_fill(cr);
         }
 
@@ -402,7 +449,7 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
             double sc = it->scale;
             int pw = gdk_pixbuf_get_width(it->pb48);
             int ph = gdk_pixbuf_get_height(it->pb48);
-            double lift = (sc - 1.0) * 20.0;
+            double lift = (sc - 1.0) * 18.0;
             cairo_save(cr);
             cairo_translate(cr, x, h * 0.5 - 2.0 - lift);
             cairo_scale(cr, sc, sc);
@@ -419,14 +466,6 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
         }
         x += sp;
     }
-
-    /* Divider + 9-dots Show Apps (Overview) */
-    double div_x = w - 54.0;
-    cairo_set_source_rgba(cr, 0.80, 0.84, 0.96, 0.18);
-    cairo_set_line_width(cr, 1.0);
-    cairo_move_to(cr, div_x, 15.0);
-    cairo_line_to(cr, div_x, h - 15.0);
-    cairo_stroke(cr);
 
     double dcx = w - 29.0;
     double dcy = h * 0.5;
@@ -449,28 +488,17 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     return FALSE;
 }
 
-static void update_hover_idx(DockApp *app, double x, double y) {
-    app->hover_idx = -1;
-    for (int i = 0; i < app->item_count; i++) {
-        if (pt_in_rect(x, y, app->r_items[i])) {
-            app->hover_idx = i;
-            return;
-        }
-    }
-    if (pt_in_rect(x, y, app->r_dots)) {
-        app->hover_idx = 99;
-    }
-}
-
 static gboolean on_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data) {
     (void)w;
     DockApp *app = (DockApp *)data;
     app->hx = ev->x;
     app->hy = ev->y;
     app->hovering = 1;
-    app->pointer_inside = 1;
+    app->pointer_hot = 1;
+    app->hot_until_us = g_get_monotonic_time() + 420000;
+    int prev = app->hover_idx;
     update_hover_idx(app, ev->x, ev->y);
-    gtk_widget_queue_draw(app->area);
+    if (prev != app->hover_idx) start_anim(app);
     return FALSE;
 }
 
@@ -480,9 +508,10 @@ static gboolean on_enter(GtkWidget *w, GdkEventCrossing *ev, gpointer data) {
     app->hx = ev->x;
     app->hy = ev->y;
     app->hovering = 1;
-    app->pointer_inside = 1;
+    app->pointer_hot = 1;
+    app->hot_until_us = g_get_monotonic_time() + 420000;
     update_hover_idx(app, ev->x, ev->y);
-    gtk_widget_queue_draw(app->area);
+    start_anim(app);
     return FALSE;
 }
 
@@ -490,18 +519,14 @@ static gboolean on_leave(GtkWidget *w, GdkEventCrossing *ev, gpointer data) {
     (void)w;
     (void)ev;
     DockApp *app = (DockApp *)data;
-    app->hovering = 0;
-    app->pointer_inside = 0;
-    app->hover_idx = -1;
-    app->leave_us = g_get_monotonic_time();
-    gtk_widget_queue_draw(app->area);
+    probe_pointer_state(app);
     return FALSE;
 }
 
 static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data) {
     (void)w;
     DockApp *app = (DockApp *)data;
-    if (ev->button != 1) return FALSE;
+    if (ev->button != 1 || ev->type != GDK_BUTTON_PRESS) return FALSE;
     update_hover_idx(app, ev->x, ev->y);
 
     if (app->hover_idx == 99) {
@@ -521,71 +546,179 @@ static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
     return FALSE;
 }
 
+static void sync_dock_window_pos(DockApp *app) {
+    if (!app->window || !app->window->window) return;
+    if (app->show_t <= 0.001) {
+        if (GTK_WIDGET_VISIBLE(app->window)) {
+            gtk_widget_hide(app->window);
+        }
+        app->cur_y = app->hidden_y;
+        return;
+    }
+
+    double e = ease_out_cubic(app->show_t);
+    int ny = (int)(app->hidden_y + (app->shown_y - app->hidden_y) * e);
+
+    if (!GTK_WIDGET_VISIBLE(app->window)) {
+        app->cur_y = ny;
+        gtk_window_move(GTK_WINDOW(app->window), app->dock_x, ny);
+        gtk_widget_show_all(app->window);
+        if (app->area && app->area->window) {
+            gdk_window_set_back_pixmap(app->area->window, NULL, FALSE);
+        }
+        gdk_window_move(app->window->window, app->dock_x, ny);
+        gdk_window_raise(app->window->window);
+        if (app->edge_win) XRaiseWindow(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), app->edge_win);
+        gdk_window_process_updates(app->window->window, TRUE);
+        gdk_flush();
+    } else if (ny != app->cur_y) {
+        app->cur_y = ny;
+        /* Direct XMoveWindow via override-redirect GdkWindow = zero WM lag/flicker */
+        gdk_window_move(app->window->window, app->dock_x, ny);
+        gdk_flush();
+    }
+}
+
 static gboolean on_anim_tick(gpointer data) {
     DockApp *app = (DockApp *)data;
     gint64 now = g_get_monotonic_time();
-    int grace = (now - app->leave_us) < 350000;
+    double dt = (app->last_tick_us > 0) ? ((double)(now - app->last_tick_us) / 1000000.0) : (1.0 / 60.0);
+    app->last_tick_us = now;
+    if (dt < 0.004) dt = 0.004;
+    if (dt > 0.045) dt = 0.045;
+
+    int grace = (now < app->hot_until_us);
     int want_visible = !app->overview_open &&
-                       (!app->has_open_tabs || app->pointer_inside || grace);
+                       (!app->has_open_tabs || app->pointer_hot || grace);
 
     double target = want_visible ? 1.0 : 0.0;
-    int moved = 0;
-    if (fabs(app->show_t - target) > 0.005) {
-        app->show_t += (target > app->show_t) ? 0.11 : -0.095;
-        if (app->show_t > 1.0) app->show_t = 1.0;
-        if (app->show_t < 0.0) app->show_t = 0.0;
-        moved = 1;
+    int active = 0;
+
+    if (fabs(app->show_t - target) > 0.003) {
+        double step = (target > app->show_t) ? (dt / 0.19) : -(dt / 0.22);
+        app->show_t += step;
+        if ((step > 0 && app->show_t > target) || (step < 0 && app->show_t < target)) {
+            app->show_t = target;
+        }
+        sync_dock_window_pos(app);
+        active = 1;
     } else if (app->show_t != target) {
         app->show_t = target;
-        moved = 1;
-    }
-
-    if (moved && app->window && app->window->window) {
-        double e = ease_out_cubic(app->show_t);
-        int ny = (int)(app->hidden_y + (app->shown_y - app->hidden_y) * e);
-        if (ny != app->cur_y) {
-            app->cur_y = ny;
-            gtk_window_move(GTK_WINDOW(app->window), app->dock_x, app->cur_y);
-        }
+        sync_dock_window_pos(app);
+        active = 1;
     }
 
     int dirty = 0;
+    double k = 1.0 - exp(-20.0 * dt);
     for (int i = 0; i < app->item_count; i++) {
-        double ts = (app->hovering && app->hover_idx == i) ? 1.16 : 1.0;
+        double ts = (app->hovering && app->hover_idx == i) ? 1.15 : 1.0;
         if (fabs(app->items[i].scale - ts) > 0.004) {
-            app->items[i].scale += (ts - app->items[i].scale) * 0.30;
+            app->items[i].scale += (ts - app->items[i].scale) * k;
             dirty = 1;
+            active = 1;
         } else if (app->items[i].scale != ts) {
             app->items[i].scale = ts;
             dirty = 1;
+            active = 1;
         }
     }
-    if (dirty) gtk_widget_queue_draw(app->area);
+    if (dirty && GTK_WIDGET_VISIBLE(app->window)) {
+        gtk_widget_queue_draw(app->area);
+    }
+
+    if (!active && !grace) {
+        app->anim_id = 0;
+        app->last_tick_us = 0;
+        return FALSE;
+    }
     return TRUE;
+}
+
+static void start_anim(DockApp *app) {
+    if (!app->anim_id) {
+        app->last_tick_us = g_get_monotonic_time();
+        app->anim_id = g_timeout_add(16, on_anim_tick, app);
+    }
 }
 
 static gboolean on_probe_tick(gpointer data) {
     DockApp *app = (DockApp *)data;
-    probe_x11_windows_and_pointer(app);
-    gtk_widget_queue_draw(app->area);
+    probe_pointer_state(app);
+    int changed = probe_x11_windows(app);
+    if (changed) {
+        if (app->edge_win && !app->overview_open) {
+            Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+            if (dpy) XRaiseWindow(dpy, app->edge_win);
+        }
+        if (GTK_WIDGET_VISIBLE(app->window)) gtk_widget_queue_draw(app->area);
+        start_anim(app);
+    }
+    if (!app->overview_open && !app->has_open_tabs && app->show_t < 1.0) {
+        start_anim(app);
+    }
     return TRUE;
+}
+
+static GdkFilterReturn on_x11_filter(GdkXEvent *xev, GdkEvent *ev, gpointer data) {
+    (void)ev;
+    DockApp *app = (DockApp *)data;
+    XEvent *e = (XEvent *)xev;
+    if (app->edge_win && e->xany.window == app->edge_win &&
+        (e->type == EnterNotify || e->type == MotionNotify)) {
+        app->pointer_hot = 1;
+        app->hot_until_us = g_get_monotonic_time() + 450000;
+        start_anim(app);
+    }
+    return GDK_FILTER_CONTINUE;
+}
+
+static void compute_edge_bounds(DockApp *app) {
+    int pad = (app->scr_w > 100) ? 24 : 0;
+    app->edge_x0 = pad;
+    app->edge_x1 = app->scr_w - pad;
+    app->edge_y0 = app->scr_h - 4;
+}
+
+static void create_bottom_edge_trigger(DockApp *app) {
+    Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+    if (!dpy) return;
+    Window root = DefaultRootWindow(dpy);
+
+    compute_edge_bounds(app);
+
+    XSetWindowAttributes swa;
+    swa.override_redirect = True;
+    swa.event_mask = EnterWindowMask | PointerMotionMask;
+    app->edge_win = XCreateWindow(
+        dpy, root,
+        app->edge_x0, app->edge_y0,
+        (unsigned int)(app->edge_x1 - app->edge_x0), 4,
+        0, CopyFromParent, InputOnly, CopyFromParent,
+        CWOverrideRedirect | CWEventMask, &swa);
+    XMapRaised(dpy, app->edge_win);
+    XFlush(dpy);
+
+    GdkWindow *gwin = gdk_window_foreign_new(app->edge_win);
+    if (gwin) {
+        gdk_window_add_filter(gwin, on_x11_filter, app);
+    }
 }
 
 static void on_realize(GtkWidget *w, gpointer data) {
     (void)w;
     DockApp *app = (DockApp *)data;
-    Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
-    Window xid = GDK_WINDOW_XID(app->window->window);
-    Atom a_type = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
-    Atom a_dock = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
-    XChangeProperty(dpy, xid, a_type, XA_ATOM, 32, PropModeReplace, (unsigned char *)&a_dock, 1);
-
-    Atom a_state = XInternAtom(dpy, "_NET_WM_STATE", False);
-    Atom a_above = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
-    XChangeProperty(dpy, xid, a_state, XA_ATOM, 32, PropModeAppend, (unsigned char *)&a_above, 1);
-
+    if (app->window->window) {
+        gdk_window_set_override_redirect(app->window->window, TRUE);
+        gdk_window_set_back_pixmap(app->window->window, NULL, FALSE);
+    }
     apply_pill_shape(app);
-    gtk_window_stick(GTK_WINDOW(app->window));
+}
+
+static void on_area_realize(GtkWidget *w, gpointer data) {
+    (void)data;
+    if (w->window) {
+        gdk_window_set_back_pixmap(w->window, NULL, FALSE);
+    }
 }
 
 static void on_screen_resized(GdkScreen *scr, gpointer data) {
@@ -596,15 +729,18 @@ static void on_screen_resized(GdkScreen *scr, gpointer data) {
         app->scr_w = nw;
         app->scr_h = nh;
         app->dock_x = (app->scr_w - app->win_w) / 2;
-        app->shown_y = app->scr_h - app->win_h - 12;
-        app->hidden_y = app->scr_h - 3;
-        app->cur_y = (app->show_t > 0.5) ? app->shown_y : app->hidden_y;
-        gtk_window_move(GTK_WINDOW(app->window), app->dock_x, app->cur_y);
-        if (app->blur_wall) {
-            cairo_surface_destroy(app->blur_wall);
-            app->blur_wall = NULL;
+        app->shown_y = app->scr_h - app->win_h - 14;
+        app->hidden_y = app->scr_h + 2;
+        build_bg_surface(app);
+        if (app->edge_win) {
+            Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+            compute_edge_bounds(app);
+            XMoveResizeWindow(dpy, app->edge_win, app->edge_x0, app->edge_y0,
+                              (unsigned int)(app->edge_x1 - app->edge_x0), 4);
+            XRaiseWindow(dpy, app->edge_win);
+            XFlush(dpy);
         }
-        load_blurred_wallpaper_strip(app);
+        sync_dock_window_pos(app);
         gtk_widget_queue_draw(app->area);
     }
 }
@@ -626,35 +762,34 @@ int main(int argc, char *argv[]) {
     app.win_w = 32 + app.item_count * 56 + 50;
     app.win_h = 66;
     app.dock_x = (app.scr_w - app.win_w) / 2;
-    app.shown_y = app.scr_h - app.win_h - 12;
-    app.hidden_y = app.scr_h - 3;
+    app.shown_y = app.scr_h - app.win_h - 14;
+    app.hidden_y = app.scr_h + 2;
 
-    probe_x11_windows_and_pointer(&app);
+    probe_x11_windows(&app);
     app.show_t = (!app.has_open_tabs && !app.overview_open) ? 1.0 : 0.0;
     app.cur_y = (app.show_t > 0.5) ? app.shown_y : app.hidden_y;
 
-    load_blurred_wallpaper_strip(&app);
+    build_bg_surface(&app);
+    create_bottom_edge_trigger(&app);
 
-    app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    /* GTK_WINDOW_POPUP = override-redirect X11 window for zero-WM-lag 60fps slide */
+    app.window = gtk_window_new(GTK_WINDOW_POPUP);
     gtk_window_set_title(GTK_WINDOW(app.window), "phantom-dock");
-    gtk_window_set_type_hint(GTK_WINDOW(app.window), GDK_WINDOW_TYPE_HINT_DOCK);
-    gtk_window_set_decorated(GTK_WINDOW(app.window), FALSE);
-    gtk_window_set_accept_focus(GTK_WINDOW(app.window), FALSE);
-    gtk_window_set_skip_taskbar_hint(GTK_WINDOW(app.window), TRUE);
-    gtk_window_set_skip_pager_hint(GTK_WINDOW(app.window), TRUE);
-    gtk_window_set_keep_above(GTK_WINDOW(app.window), TRUE);
+    gtk_widget_set_app_paintable(app.window, TRUE);
     gtk_window_set_default_size(GTK_WINDOW(app.window), app.win_w, app.win_h);
     gtk_widget_set_size_request(app.window, app.win_w, app.win_h);
-    gtk_window_move(GTK_WINDOW(app.window), app.dock_x, app.cur_y);
 
     g_signal_connect(app.window, "realize", G_CALLBACK(on_realize), &app);
     g_signal_connect(scr, "size-changed", G_CALLBACK(on_screen_resized), &app);
 
     app.area = gtk_drawing_area_new();
+    gtk_widget_set_app_paintable(app.area, TRUE);
+    gtk_widget_set_double_buffered(app.area, TRUE);
     gtk_widget_set_size_request(app.area, app.win_w, app.win_h);
     gtk_widget_add_events(app.area,
         GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK |
         GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
+    g_signal_connect(app.area, "realize", G_CALLBACK(on_area_realize), &app);
     g_signal_connect(app.area, "expose-event", G_CALLBACK(on_expose), &app);
     g_signal_connect(app.area, "button-press-event", G_CALLBACK(on_button_press), &app);
     g_signal_connect(app.area, "motion-notify-event", G_CALLBACK(on_motion), &app);
@@ -662,13 +797,12 @@ int main(int argc, char *argv[]) {
     g_signal_connect(app.area, "leave-notify-event", G_CALLBACK(on_leave), &app);
     gtk_container_add(GTK_CONTAINER(app.window), app.area);
 
-    g_timeout_add(16, on_anim_tick, &app);
-    g_timeout_add(140, on_probe_tick, &app);
+    gtk_widget_realize(app.window);
+    sync_dock_window_pos(&app);
 
-    gtk_widget_show_all(app.window);
-    gtk_window_move(GTK_WINDOW(app.window), app.dock_x, app.cur_y);
+    g_timeout_add(45, on_probe_tick, &app);
     gtk_main();
 
-    if (app.blur_wall) cairo_surface_destroy(app.blur_wall);
+    if (app.bg_surf) cairo_surface_destroy(app.bg_surf);
     return 0;
 }
