@@ -48,6 +48,7 @@ if [ -x "${CC_BIN}" ] && [ -x "${PKGCFG_BIN}" ]; then
     build_c_app "phantom-monitor" "gtk+-2.0" -lm
     build_c_app "phantom-settings" "gtk+-2.0 xrandr" -lm -lX11
     build_c_app "phantom-overview" "gtk+-2.0" -lm -lX11
+    build_c_app "phantom-dock" "gtk+-2.0" -lm -lX11
     build_c_app "phantom-login" "gtk+-2.0" -lm -lcrypt -lX11
     build_c_app "phantom-panel" "gtk+-2.0 xrandr" -lm -lX11
     build_c_app "phantom-gestures" "libinput libudev x11" -lm
