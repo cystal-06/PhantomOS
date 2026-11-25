@@ -880,7 +880,7 @@ static void sample_all(PanelApp *app) {
     time_t now = time(NULL);
     struct tm t;
     localtime_r(&now, &t);
-    strftime(app->clock_str, sizeof(app->clock_str), "%H:%M:%S", &t);
+    strftime(app->clock_str, sizeof(app->clock_str), "%b %-d  %-I:%M %p", &t);
 }
 
 static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
@@ -1328,6 +1328,21 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     cairo_line_to(cr, lx + 13, 6); cairo_line_to(cr, lx + 14, 8);
     cairo_stroke(cr);
 
+    /* CENTER: GNOME-style Date & Time Pill ("Nov 25  9:29 PM") */
+    {
+        cairo_text_extents_t c_ext;
+        cairo_select_font_face(cr, "Adwaita Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+        cairo_set_font_size(cr, 10.5);
+        cairo_text_extents(cr, app->clock_str, &c_ext);
+        double clk_w = c_ext.width + 20.0;
+        double clk_x = (w - clk_w) * 0.5;
+        if (clk_x < lx + 36.0) clk_x = lx + 36.0;
+        app->r_clk = (Rect){ clk_x, 3, clk_w, 21 };
+        draw_hover_pill(cr, app, app->r_clk);
+        draw_text(cr, clk_x + (clk_w - c_ext.width) * 0.5 - c_ext.x_bearing, 17.5,
+                  app->clock_str, 0.902, 0.922, 0.969, 1, 10.5);
+    }
+
     /* RIGHT SIDE: Astra-Monitor-style Telemetry HUD + Top-Right Quick Settings Pill */
     double rx = w - 10.0;
 
@@ -1380,13 +1395,6 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
                   app->bat_charging ? 0.890 : 0.839,
                   app->bat_charging ? 0.631 : 0.957, 1, 9.5);
     }
-
-    /* Clock Pill */
-    double clk_w = 66.0;
-    rx -= (clk_w + 6.0);
-    app->r_clk = (Rect){ rx, 3, clk_w, 21 };
-    draw_hover_pill(cr, app, app->r_clk);
-    draw_text(cr, rx + 7, 17.5, app->clock_str, 0.804, 0.839, 0.957, 1, 10.5);
 
     /* Network Widget */
     double net_w = 112.0;
