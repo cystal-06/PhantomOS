@@ -61,6 +61,7 @@ typedef struct {
     int pointer_hot;
     int sliding_up;
     gint64 hot_until_us;
+    gint64 overview_launch_until_us;
 
     double show_t;       /* 0.0 = hidden, 1.0 = shown */
     double hx, hy;
@@ -260,6 +261,7 @@ static void update_hover_idx(DockApp *app, double x, double y) {
 static void start_anim(DockApp *app);
 
 static void probe_pointer_state(DockApp *app) {
+    if (app->overview_open) return;
     Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
     if (!dpy) return;
     Window root = DefaultRootWindow(dpy);
@@ -569,9 +571,11 @@ static gboolean on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
 
     if (app->hover_idx == 99) {
         app->overview_open = 1;
+        app->overview_launch_until_us = g_get_monotonic_time() + 600000;
         hide_dock_immediately(app);
         gdk_flush();
-        g_usleep(15000);
+        Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+        if (dpy) XSync(dpy, False);
         spawn_cmd("/usr/bin/phantom-overview");
         return TRUE;
     }
@@ -720,18 +724,23 @@ static gboolean on_probe_tick(gpointer data) {
     if (scr) {
         on_screen_resized(scr, app);
     }
-    probe_pointer_state(app);
     int ov = (access("/tmp/.phantom-overview.pid", F_OK) == 0);
     if (ov) {
+        app->overview_launch_until_us = 0;
         if (!app->overview_open || (app->window && GTK_WIDGET_VISIBLE(app->window))) {
             app->overview_open = 1;
             hide_dock_immediately(app);
         }
         return TRUE;
     } else if (app->overview_open) {
+        if (g_get_monotonic_time() < app->overview_launch_until_us) {
+            return TRUE;
+        }
         app->overview_open = 0;
+        app->overview_launch_until_us = 0;
         app->hot_until_us = 0;
     }
+    probe_pointer_state(app);
     tick_n++;
     /* Defer synchronous Xlib property polling while actively sliding */
     if ((app->show_t <= 0.01 || app->show_t >= 0.99) && (tick_n % 6) == 0) {

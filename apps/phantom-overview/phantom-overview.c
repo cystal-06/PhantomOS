@@ -669,7 +669,7 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *event, gpointer dat
     double dock_w = dock_pad * 2 + pn * item_sp + 46.0; /* + show-apps 9-dots button */
     double dock_h = 68.0;
     double dock_x = (w - dock_w) * 0.5;
-    double dock_y = h - dock_h - 20.0 + (1.0 - e) * 44.0;
+    double dock_y = h - dock_h - 16.0;
 
     rounded_rect(cr, dock_x, dock_y, dock_w, dock_h, 22.0);
     cairo_set_source_rgba(cr, 0.118, 0.129, 0.184, 0.92 * e);
@@ -1014,15 +1014,15 @@ int main(int argc, char *argv[]) {
     if (app.scr_w < 800) app.scr_w = 1920;
     if (app.scr_h < 600) app.scr_h = 1080;
 
+    pf = fopen(PID_FILE, "w");
+    if (pf) { fprintf(pf, "%d\n", (int)getpid()); fclose(pf); }
+    signal(SIGUSR1, on_sig_usr1);
+
     capture_blurred_desktop(&app);
     probe_x11_state(&app);
     app.ws_sel_pos = (double)app.cur_ws;
     app.anim_t = 0.14;
     init_apps(&app);
-
-    pf = fopen(PID_FILE, "w");
-    if (pf) { fprintf(pf, "%d\n", (int)getpid()); fclose(pf); }
-    signal(SIGUSR1, on_sig_usr1);
 
     /* GTK_WINDOW_POPUP = atomic override-redirect map at (0,0,scr_w,scr_h) with zero WM resize flicker */
     app.window = gtk_window_new(GTK_WINDOW_POPUP);
